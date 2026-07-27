@@ -19,6 +19,7 @@ OpenTelemetry span name or event name.
 | `ExtensionInstallEvent` | `ext.install` | Extension install/upgrade event |
 | `ExtensionUpgradeEvent` | `ext.upgrade` | Single extension upgrade attempt |
 | `ExtensionPromoteEvent` | `ext.promote` | Extension registry promotion (e.g., dev → main) |
+| `ExtensionUsageEvent` | `ext.usage` | One usage attribute reported by an extension through the telemetry service |
 | `CopilotInitializeEvent` | `copilot.initialize` | Copilot initialization event |
 | `CopilotSessionEvent` | `copilot.session` | Copilot session lifecycle event |
 | `ProvisionValidationEvent` | `validation.provision` | Local provision validation outcome |
@@ -88,7 +89,6 @@ These are set once at process startup via `resource.New()` and attached to every
 | Service languages | `project.service.languages` | SystemMetadata | FeatureInsight | List of languages |
 | Service language | `project.service.language` | SystemMetadata | PerformanceAndHealth | Single service language |
 | Platform type | `platform.type` | SystemMetadata | FeatureInsight | e.g. `aca`, `aks` |
-| Agent deployment mode | `agent.deploy.mode` | SystemMetadata | FeatureInsight | `string[]`; per-command set of `code`/`container`/`byo_image` contributed by an authenticated extension through the telemetry service; fixed enum, not hashed; App Insights stores JSON text |
 
 ### Config and Environment
 
@@ -215,6 +215,34 @@ not emitted by azd spans.
 | Upgrade outcome | `extension.upgrade.outcome` | SystemMetadata | FeatureInsight | Upgrade result status |
 | Dependency of | `extension.dependency_of` | SystemMetadata | FeatureInsight | Parent extension for a dependency upgrade |
 | Dependency upgrade count | `extension.dependency_upgrade_count` | SystemMetadata | FeatureInsight | Recursive dependency upgrade count |
+
+#### Extension-contributed usage attributes
+
+Extensions do not have individual fields listed in this document. Instead they
+declare the attributes they may report in their entry in the official azd
+extension registry, and `azd` records each accepted value on an `ext.usage`
+span alongside `extension.id` and `extension.version`.
+
+`azd` core carries no product-specific telemetry semantics for these fields.
+The following rules are enforced by the host and are what this schema
+guarantees about the whole class:
+
+| Rule | Enforcement |
+|------|-------------|
+| Key namespace | Must be `ext.<extension id>.<segment>[.<segment>…]`, lowercase alphanumeric and hyphens |
+| Values | Must be one of the closed set declared for that key in the registry; free-form values are always rejected |
+| Value charset | Lowercase alphanumeric with `_`, `-`, and `.`; `:` and `/` are excluded so registry names, URLs, and paths cannot be smuggled through |
+| Classification | Always `SystemMetadata` |
+| Purpose | Always `FeatureInsight` |
+| Trust | Only extensions installed from the official `azd` registry, carrying the `telemetry` capability, may report values |
+| Review | Adding or changing a declared field is a change to the official registry in this repository and is reviewed like any other telemetry change |
+
+Because `ext.usage` spans share the command's trace, they join the originating
+command in Kusto on `operation_Id`. See
+[ADR-001](../../architecture/adr-001-extension-telemetry-declarations.md) for
+the design rationale and
+[Extension Telemetry Fields](../../../cli/azd/docs/extensions/extension-telemetry-fields.md)
+for the author-facing declaration rules.
 
 ### Update
 

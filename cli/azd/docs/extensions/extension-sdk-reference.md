@@ -525,18 +525,44 @@ Always call `defer client.Close()` after creation.
 
 #### TelemetryService
 
-`Telemetry().AddCommandUsageAttribute(ctx, &azdext.AddCommandUsageAttributeRequest{Key, Value})`
-lets an authenticated extension contribute a host-validated command usage
-attribute. The host owns the allowlist: it validates the key and value, checks
-the extension's declared capabilities, and, when accepted, attaches the value
-to the current command telemetry event (for example `cmd.deploy` or `cmd.up`)
-as a de-duplicated string slice. Extensions cannot choose classification,
-purpose, hashing, or aggregation, and unknown keys or values are rejected.
+`Telemetry().ReportUsageAttribute(ctx, &azdext.ReportUsageAttributeRequest{Key, Value})`
+lets an authenticated extension report one usage attribute value. The
+extension declares the key and its closed value set in its entry in the
+official azd registry; `azd` core owns no product-specific fields, so adding a
+new field is a registry change rather than a core release.
 
-The call is best-effort. It returns `Accepted=false` (not an error) when no
-eligible command is active, and an older azd host returns `Unimplemented`.
-Treat any failure as a no-op and never let it change command behavior. Report
-a value as soon as it is known so a later failure still retains it.
+The host validates every call and fails closed. It requires the extension to
+be installed from the official `azd` registry, to carry the `telemetry`
+capability, and to have declared both the key and the exact value. Accepted
+values are recorded on a dedicated `ext.usage` span that shares the command's
+trace, so downstream queries join it to the originating command on
+`operation_Id`. Extensions cannot choose the span, classification, purpose,
+hashing, or aggregation.
+
+Declare fields in the registry entry alongside the capability:
+
+```json
+{
+  "version": "1.0.0",
+  "capabilities": ["telemetry"],
+  "telemetry": [
+    {
+      "key": "ext.contoso.tools.deploy.mode",
+      "allowedValues": ["code", "container"]
+    }
+  ]
+}
+```
+
+Keys must be namespaced as `ext.<extension id>.<segment>`, and values are
+limited to lowercase alphanumerics with `_`, `-`, and `.` so registry names,
+URLs, and paths cannot be smuggled through a value. See
+[Extension Telemetry Fields](./extension-telemetry-fields.md) for the full
+declaration rules and review process.
+
+The call is best-effort. An older azd host returns `Unimplemented`. Treat any
+failure as a no-op and never let it change command behavior. Report a value as
+soon as it is known so a later failure still retains it.
 
 ### ConfigHelper
 

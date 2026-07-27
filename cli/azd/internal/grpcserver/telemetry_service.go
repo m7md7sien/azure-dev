@@ -6,81 +6,53 @@ package grpcserver
 import (
 	"context"
 	"slices"
+	"strings"
 
 	"github.com/azure/azure-dev/cli/azd/internal/tracing"
 	"github.com/azure/azure-dev/cli/azd/internal/tracing/events"
 	"github.com/azure/azure-dev/cli/azd/internal/tracing/fields"
 	"github.com/azure/azure-dev/cli/azd/pkg/azdext"
-	"github.com/azure/azure-dev/cli/azd/pkg/azdext/telemetry"
 	"github.com/azure/azure-dev/cli/azd/pkg/extensions"
+	"go.opentelemetry.io/otel/attribute"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
-// maxTelemetryFieldLength bounds the accepted key and value length. This is a
-// defensive limit against oversized input, not a privacy control. The value
-// allowlist is the privacy control.
-const maxTelemetryFieldLength = 128
-
-// commandUsageFieldPolicy is the host-owned policy for one extension-settable
-// command usage attribute.
-type commandUsageFieldPolicy struct {
-	key                  fields.AttributeKey
-	allowedValues        map[string]struct{}
-	eligibleEvents       map[string]struct{}
-	requiredCapabilities map[extensions.CapabilityType]struct{}
-}
-
-// extensionUsageFields is the allowlist of command usage attributes an
-// authenticated extension may contribute. The host owns every field's key,
-// classification, allowed values, eligible command events, and required
-// capabilities. No extension identifier is hardcoded: eligibility is expressed
-// through signed extension capabilities and the fixed value set.
-var extensionUsageFields = map[string]commandUsageFieldPolicy{
-	telemetry.AgentDeploymentModeAttribute: {
-		key: fields.AgentDeploymentModeKey,
-		allowedValues: map[string]struct{}{
-			string(telemetry.AgentDeploymentModeCode):      {},
-			string(telemetry.AgentDeploymentModeContainer): {},
-			string(telemetry.AgentDeploymentModeByoImage):  {},
-		},
-		eligibleEvents: map[string]struct{}{
-			events.GetCommandEventName("azd deploy"): {},
-			events.GetCommandEventName("azd up"):     {},
-		},
-		requiredCapabilities: map[extensions.CapabilityType]struct{}{
-			extensions.ServiceTargetProviderCapability: {},
-		},
-	},
+// installedExtensionLookup resolves the installed extension record for a
+// signed extension id. *extensions.Manager satisfies it.
+type installedExtensionLookup interface {
+	GetInstalled(options extensions.FilterOptions) (*extensions.Extension, error)
 }
 
 // telemetryService implements azdext.TelemetryServiceServer.
 type telemetryService struct {
 	azdext.UnimplementedTelemetryServiceServer
-	fields map[string]commandUsageFieldPolicy
+	extensions installedExtensionLookup
 }
 
-// NewTelemetryService creates the telemetry gRPC service. It holds no injected
-// state; the handler reaches the process-global command usage store through the
-// tracing package. Returning the interface type lets the IoC container satisfy
-// the azdext.TelemetryServiceServer parameter on NewServer without an adapter.
-func NewTelemetryService() azdext.TelemetryServiceServer {
-	return newTelemetryService(extensionUsageFields)
+// NewTelemetryService creates the telemetry gRPC service. The extension
+// manager supplies the telemetry declarations an extension published in the
+// registry it was installed from; the host owns no product-specific fields.
+// Returning the interface type lets the IoC container satisfy the
+// azdext.TelemetryServiceServer parameter on NewServer without an adapter.
+func NewTelemetryService(manager *extensions.Manager) azdext.TelemetryServiceServer {
+	return newTelemetryService(manager)
 }
 
-func newTelemetryService(fieldPolicies map[string]commandUsageFieldPolicy) *telemetryService {
-	return &telemetryService{fields: fieldPolicies}
+func newTelemetryService(lookup installedExtensionLookup) *telemetryService {
+	return &telemetryService{extensions: lookup}
 }
 
-// AddCommandUsageAttribute validates an authenticated extension's request
-// against the host allowlist and, when valid, appends the value to the current
-// command usage scope. It fails closed: unknown keys, missing capabilities,
-// invalid policies, and disallowed values are all rejected before anything is
-// recorded. Rejected caller text is never echoed into the returned error.
-func (s *telemetryService) AddCommandUsageAttribute(
+// ReportUsageAttribute records one usage attribute value that the calling
+// extension declared in the official azd registry. It fails closed: callers
+// without validated claims, extensions installed from any other source,
+// extensions without the telemetry capability, undeclared keys, and values
+// outside the declared set are all rejected before anything is recorded.
+// Rejected caller text is never echoed into the returned error.
+func (s *telemetryService) ReportUsageAttribute(
 	ctx context.Context,
-	req *azdext.AddCommandUsageAttributeRequest,
-) (*azdext.AddCommandUsageAttributeResponse, error) {
+	req *azdext.ReportUsageAttributeRequest,
+) (*azdext.ReportUsageAttributeResponse, error) {
 	claims, err := extensions.GetClaimsFromContext(ctx)
 	if err != nil {
 		return nil, status.Error(codes.Unauthenticated, "validated extension claims are required")
@@ -88,44 +60,65 @@ func (s *telemetryService) AddCommandUsageAttribute(
 
 	if req == nil ||
 		req.Key == "" || req.Value == "" ||
-		len(req.Key) > maxTelemetryFieldLength || len(req.Value) > maxTelemetryFieldLength {
+		len(req.Key) > extensions.MaxTelemetryKeyLength ||
+		len(req.Value) > extensions.MaxTelemetryValueLength {
 		return nil, status.Error(codes.InvalidArgument, "telemetry key and value are required")
 	}
 
-	policy, ok := s.fields[req.Key]
-	if !ok {
-		return nil, status.Error(codes.InvalidArgument, "telemetry key is not registered")
+	// Only extensions published through the official registry may report
+	// telemetry, because that registry is where declared fields are reviewed.
+	// Source is host-signed, so an extension cannot claim a better origin.
+	if !strings.EqualFold(claims.Source, extensions.MainRegistryName) {
+		return nil, status.Error(codes.PermissionDenied,
+			"telemetry requires an extension installed from the official registry")
 	}
 
-	if !hasRequiredCapability(claims, policy.requiredCapabilities) {
-		return nil, status.Error(codes.PermissionDenied, "extension lacks the required capability")
+	if !slices.Contains(claims.Capabilities, extensions.TelemetryCapability) {
+		return nil, status.Error(codes.PermissionDenied, "extension lacks the telemetry capability")
 	}
 
-	if len(policy.allowedValues) == 0 || len(policy.eligibleEvents) == 0 {
-		return nil, status.Error(codes.Internal, "telemetry field policy is invalid")
+	extension, err := s.extensions.GetInstalled(extensions.FilterOptions{Id: claims.Subject})
+	if err != nil {
+		return nil, status.Error(codes.PermissionDenied, "extension is not installed")
 	}
 
-	if _, ok := policy.allowedValues[req.Value]; !ok {
-		return nil, status.Error(codes.InvalidArgument, "telemetry value is not allowed")
+	// Re-validate the stored declaration. The installed record lives in user
+	// config, so shape is enforced again here rather than trusted from disk.
+	if issues := extensions.ValidateTelemetryDeclarations(
+		extension.Id, extension.Telemetry); len(issues) > 0 {
+		return nil, status.Error(codes.FailedPrecondition, "telemetry declarations are invalid")
 	}
 
-	accepted := tracing.TryAppendCommandUsageUnique(policy.eligibleEvents, policy.key.Key, req.Value)
+	if !isDeclaredValue(extension.Telemetry, req.Key, req.Value) {
+		return nil, status.Error(codes.InvalidArgument, "telemetry value is not declared")
+	}
 
-	return &azdext.AddCommandUsageAttributeResponse{Accepted: accepted}, nil
+	// Record a dedicated span rather than augmenting the command span. The
+	// extension's trace context arrives over gRPC metadata, so this span
+	// shares the command's trace and joins on operation_Id downstream.
+	_, span := tracing.Start(ctx, events.ExtensionUsageEvent)
+	span.SetAttributes(
+		fields.ExtensionId.String(extension.Id),
+		fields.ExtensionVersion.String(extension.Version),
+		attribute.String(req.Key, req.Value),
+	)
+	span.End()
+
+	return &azdext.ReportUsageAttributeResponse{Accepted: true}, nil
 }
 
-// hasRequiredCapability reports whether the signed extension claims carry every
-// required capability. Capabilities are part of the host-signed token, so they
-// are trustworthy without a separate manager lookup.
-func hasRequiredCapability(
-	claims *extensions.ExtensionClaims,
-	required map[extensions.CapabilityType]struct{},
+// isDeclaredValue reports whether key is declared and value is in that key's
+// declared closed set.
+func isDeclaredValue(
+	declarations []extensions.TelemetryFieldDeclaration,
+	key string,
+	value string,
 ) bool {
-	for capability := range required {
-		if !slices.Contains(claims.Capabilities, capability) {
-			return false
+	for _, declaration := range declarations {
+		if declaration.Key == key {
+			return slices.Contains(declaration.AllowedValues, value)
 		}
 	}
 
-	return true
+	return false
 }

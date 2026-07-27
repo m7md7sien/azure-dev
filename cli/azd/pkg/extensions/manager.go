@@ -752,6 +752,7 @@ func (m *Manager) installInternal(
 		Source:       extension.Source,
 		Providers:    selectedVersion.Providers,
 		McpConfig:    selectedVersion.McpConfig,
+		Telemetry:    selectedVersion.Telemetry,
 	}
 
 	if err := m.userConfig.Set(installedConfigKey, extensions); err != nil {

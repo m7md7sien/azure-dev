@@ -32,6 +32,10 @@ const (
 	ExtensionUpgradeEvent = "ext.upgrade"
 	// ExtensionPromoteEvent tracks a registry promotion (e.g., dev → main).
 	ExtensionPromoteEvent = "ext.promote"
+	// ExtensionUsageEvent carries one usage attribute an extension reported
+	// through the telemetry service. The attribute key and value come from
+	// the extension's registry declaration, validated by the host.
+	ExtensionUsageEvent = "ext.usage"
 )
 
 // Copilot agent related events.

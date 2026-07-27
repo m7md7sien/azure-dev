@@ -32,6 +32,7 @@ var ValidCapabilities = []CapabilityType{
 	MetadataCapability,
 	ProvisioningProviderCapability,
 	ValidationProviderCapability,
+	TelemetryCapability,
 }
 
 // validChecksumAlgorithms defines the supported checksum algorithms.
@@ -218,7 +219,7 @@ func validateExtension(ext *ExtensionMetadata, strict bool) ExtensionValidationR
 
 	// Validate each version
 	for i, ver := range ext.Versions {
-		validateVersion(&result, i, &ver, strict)
+		validateVersion(&result, ext.Id, i, &ver, strict)
 	}
 
 	// Find latest version using semver ordering
@@ -262,7 +263,13 @@ func findLatestVersion(versions []ExtensionVersion) *ExtensionVersion {
 }
 
 // validateVersion validates a single version entry within an extension.
-func validateVersion(result *ExtensionValidationResult, index int, ver *ExtensionVersion, strict bool) {
+func validateVersion(
+	result *ExtensionValidationResult,
+	extensionId string,
+	index int,
+	ver *ExtensionVersion,
+	strict bool,
+) {
 	prefix := fmt.Sprintf("versions[%d]", index)
 
 	// Validate semver format using the semver package
@@ -279,6 +286,17 @@ func validateVersion(result *ExtensionValidationResult, index int, ver *Extensio
 			result.addError(fmt.Sprintf("%s: unknown capability '%s' (valid: %s)",
 				prefix, cap, strings.Join(capabilityStrings(), ", ")))
 		}
+	}
+
+	// Validate telemetry declarations. Every field an extension may report at
+	// runtime is declared here and reviewed as part of the registry change.
+	for _, issue := range ValidateTelemetryDeclarations(extensionId, ver.Telemetry) {
+		result.addError(fmt.Sprintf("%s: %s", prefix, issue))
+	}
+
+	if len(ver.Telemetry) > 0 && !slices.Contains(ver.Capabilities, TelemetryCapability) {
+		result.addError(fmt.Sprintf("%s: telemetry declarations require the '%s' capability",
+			prefix, TelemetryCapability))
 	}
 
 	// Enforce that each version has at least one artifact or dependency

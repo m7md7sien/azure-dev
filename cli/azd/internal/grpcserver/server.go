@@ -100,10 +100,12 @@ func (s *Server) Start() (*ServerInfo, error) {
 	s.grpcServer = grpc.NewServer(
 		grpc.ChainUnaryInterceptor(
 			s.errorWrappingInterceptor(),
+			s.traceContextInterceptor(),
 			s.tokenAuthInterceptor(&serverInfo),
 		),
 		grpc.ChainStreamInterceptor(
 			s.errorWrappingStreamInterceptor(),
+			s.traceContextStreamInterceptor(),
 			s.tokenAuthStreamInterceptor(&serverInfo),
 		),
 	)
@@ -252,7 +254,7 @@ func (s *Server) tokenAuthStreamInterceptor(serverInfo *ServerInfo) grpc.StreamS
 		}
 
 		// Wrap the stream to inject validated claims into its context
-		wrappedStream := &authenticatedStream{
+		wrappedStream := &contextStream{
 			ServerStream: ss,
 			ctx:          ctx,
 		}
@@ -261,13 +263,14 @@ func (s *Server) tokenAuthStreamInterceptor(serverInfo *ServerInfo) grpc.StreamS
 	}
 }
 
-// authenticatedStream wraps a grpc.ServerStream to provide a context with validated claims.
-type authenticatedStream struct {
+// contextStream wraps a grpc.ServerStream to override the context seen by the
+// handler, for example to carry validated claims or trace context.
+type contextStream struct {
 	grpc.ServerStream
 	ctx context.Context
 }
 
-func (s *authenticatedStream) Context() context.Context {
+func (s *contextStream) Context() context.Context {
 	return s.ctx
 }
 

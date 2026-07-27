@@ -24,30 +24,30 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-type AddCommandUsageAttributeRequest struct {
+type ReportUsageAttributeRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Key must be registered and owned by the host.
+	// Key must match a telemetry field the extension declared in the registry.
 	Key string `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
-	// Value must be in the host-owned allowed set for key.
+	// Value must be in the allowed set the extension declared for key.
 	Value         string `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *AddCommandUsageAttributeRequest) Reset() {
-	*x = AddCommandUsageAttributeRequest{}
+func (x *ReportUsageAttributeRequest) Reset() {
+	*x = ReportUsageAttributeRequest{}
 	mi := &file_telemetry_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *AddCommandUsageAttributeRequest) String() string {
+func (x *ReportUsageAttributeRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*AddCommandUsageAttributeRequest) ProtoMessage() {}
+func (*ReportUsageAttributeRequest) ProtoMessage() {}
 
-func (x *AddCommandUsageAttributeRequest) ProtoReflect() protoreflect.Message {
+func (x *ReportUsageAttributeRequest) ProtoReflect() protoreflect.Message {
 	mi := &file_telemetry_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -59,48 +59,47 @@ func (x *AddCommandUsageAttributeRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use AddCommandUsageAttributeRequest.ProtoReflect.Descriptor instead.
-func (*AddCommandUsageAttributeRequest) Descriptor() ([]byte, []int) {
+// Deprecated: Use ReportUsageAttributeRequest.ProtoReflect.Descriptor instead.
+func (*ReportUsageAttributeRequest) Descriptor() ([]byte, []int) {
 	return file_telemetry_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *AddCommandUsageAttributeRequest) GetKey() string {
+func (x *ReportUsageAttributeRequest) GetKey() string {
 	if x != nil {
 		return x.Key
 	}
 	return ""
 }
 
-func (x *AddCommandUsageAttributeRequest) GetValue() string {
+func (x *ReportUsageAttributeRequest) GetValue() string {
 	if x != nil {
 		return x.Value
 	}
 	return ""
 }
 
-type AddCommandUsageAttributeResponse struct {
+type ReportUsageAttributeResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Accepted is false when the value was rejected because no eligible command
-	// scope is currently active. A false response is not an error.
+	// Accepted reports whether the host recorded the value.
 	Accepted      bool `protobuf:"varint,1,opt,name=accepted,proto3" json:"accepted,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *AddCommandUsageAttributeResponse) Reset() {
-	*x = AddCommandUsageAttributeResponse{}
+func (x *ReportUsageAttributeResponse) Reset() {
+	*x = ReportUsageAttributeResponse{}
 	mi := &file_telemetry_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *AddCommandUsageAttributeResponse) String() string {
+func (x *ReportUsageAttributeResponse) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*AddCommandUsageAttributeResponse) ProtoMessage() {}
+func (*ReportUsageAttributeResponse) ProtoMessage() {}
 
-func (x *AddCommandUsageAttributeResponse) ProtoReflect() protoreflect.Message {
+func (x *ReportUsageAttributeResponse) ProtoReflect() protoreflect.Message {
 	mi := &file_telemetry_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -112,12 +111,12 @@ func (x *AddCommandUsageAttributeResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use AddCommandUsageAttributeResponse.ProtoReflect.Descriptor instead.
-func (*AddCommandUsageAttributeResponse) Descriptor() ([]byte, []int) {
+// Deprecated: Use ReportUsageAttributeResponse.ProtoReflect.Descriptor instead.
+func (*ReportUsageAttributeResponse) Descriptor() ([]byte, []int) {
 	return file_telemetry_proto_rawDescGZIP(), []int{1}
 }
 
-func (x *AddCommandUsageAttributeResponse) GetAccepted() bool {
+func (x *ReportUsageAttributeResponse) GetAccepted() bool {
 	if x != nil {
 		return x.Accepted
 	}
@@ -128,14 +127,14 @@ var File_telemetry_proto protoreflect.FileDescriptor
 
 const file_telemetry_proto_rawDesc = "" +
 	"\n" +
-	"\x0ftelemetry.proto\x12\x06azdext\"I\n" +
-	"\x1fAddCommandUsageAttributeRequest\x12\x10\n" +
+	"\x0ftelemetry.proto\x12\x06azdext\"E\n" +
+	"\x1bReportUsageAttributeRequest\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value\">\n" +
-	" AddCommandUsageAttributeResponse\x12\x1a\n" +
-	"\baccepted\x18\x01 \x01(\bR\baccepted2\x81\x01\n" +
-	"\x10TelemetryService\x12m\n" +
-	"\x18AddCommandUsageAttribute\x12'.azdext.AddCommandUsageAttributeRequest\x1a(.azdext.AddCommandUsageAttributeResponseB/Z-github.com/azure/azure-dev/cli/azd/pkg/azdextb\x06proto3"
+	"\x05value\x18\x02 \x01(\tR\x05value\":\n" +
+	"\x1cReportUsageAttributeResponse\x12\x1a\n" +
+	"\baccepted\x18\x01 \x01(\bR\baccepted2u\n" +
+	"\x10TelemetryService\x12a\n" +
+	"\x14ReportUsageAttribute\x12#.azdext.ReportUsageAttributeRequest\x1a$.azdext.ReportUsageAttributeResponseB/Z-github.com/azure/azure-dev/cli/azd/pkg/azdextb\x06proto3"
 
 var (
 	file_telemetry_proto_rawDescOnce sync.Once
@@ -151,12 +150,12 @@ func file_telemetry_proto_rawDescGZIP() []byte {
 
 var file_telemetry_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
 var file_telemetry_proto_goTypes = []any{
-	(*AddCommandUsageAttributeRequest)(nil),  // 0: azdext.AddCommandUsageAttributeRequest
-	(*AddCommandUsageAttributeResponse)(nil), // 1: azdext.AddCommandUsageAttributeResponse
+	(*ReportUsageAttributeRequest)(nil),  // 0: azdext.ReportUsageAttributeRequest
+	(*ReportUsageAttributeResponse)(nil), // 1: azdext.ReportUsageAttributeResponse
 }
 var file_telemetry_proto_depIdxs = []int32{
-	0, // 0: azdext.TelemetryService.AddCommandUsageAttribute:input_type -> azdext.AddCommandUsageAttributeRequest
-	1, // 1: azdext.TelemetryService.AddCommandUsageAttribute:output_type -> azdext.AddCommandUsageAttributeResponse
+	0, // 0: azdext.TelemetryService.ReportUsageAttribute:input_type -> azdext.ReportUsageAttributeRequest
+	1, // 1: azdext.TelemetryService.ReportUsageAttribute:output_type -> azdext.ReportUsageAttributeResponse
 	1, // [1:2] is the sub-list for method output_type
 	0, // [0:1] is the sub-list for method input_type
 	0, // [0:0] is the sub-list for extension type_name

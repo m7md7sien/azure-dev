@@ -7,7 +7,64 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/trace"
+	"google.golang.org/grpc/metadata"
 )
+
+const (
+	testTraceId = "68f1c4f4ef5346e69d7f196761d10c68"
+	testSpanId  = "7fbdc197a52f4825"
+)
+
+func testTraceparent() string {
+	return "00-" + testTraceId + "-" + testSpanId + "-01"
+}
+
+func Test_WithAccessToken_PropagatesEnvTraceContext(t *testing.T) {
+	t.Setenv(traceparentEnv, testTraceparent())
+	t.Setenv(tracestateEnv, "vendor=value")
+
+	md, ok := metadata.FromOutgoingContext(WithAccessToken(t.Context(), "token"))
+
+	require.True(t, ok)
+	require.Equal(t, []string{"token"}, md.Get("authorization"))
+	require.Equal(t, []string{testTraceparent()}, md.Get(traceparentHeader))
+	require.Equal(t, []string{"vendor=value"}, md.Get(tracestateHeader))
+}
+
+func Test_WithAccessToken_PrefersContextSpan(t *testing.T) {
+	t.Setenv(traceparentEnv, testTraceparent())
+
+	traceId, err := trace.TraceIDFromHex("11111111111111111111111111111111")
+	require.NoError(t, err)
+	spanId, err := trace.SpanIDFromHex("2222222222222222")
+	require.NoError(t, err)
+
+	ctx := trace.ContextWithSpanContext(t.Context(), trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    traceId,
+		SpanID:     spanId,
+		TraceFlags: trace.FlagsSampled,
+	}))
+
+	md, ok := metadata.FromOutgoingContext(WithAccessToken(ctx, "token"))
+
+	require.True(t, ok)
+	require.Equal(t, []string{
+		"00-11111111111111111111111111111111-2222222222222222-01",
+	}, md.Get(traceparentHeader))
+}
+
+func Test_WithAccessToken_OmitsMissingTraceContext(t *testing.T) {
+	t.Setenv(traceparentEnv, "")
+	t.Setenv(tracestateEnv, "")
+
+	md, ok := metadata.FromOutgoingContext(WithAccessToken(t.Context(), "token"))
+
+	require.True(t, ok)
+	require.Equal(t, []string{"token"}, md.Get("authorization"))
+	require.Empty(t, md.Get(traceparentHeader))
+	require.Empty(t, md.Get(tracestateHeader))
+}
 
 func Test_IsLocalhostAddress(t *testing.T) {
 	tests := []struct {

@@ -183,6 +183,12 @@ flowchart LR
   - Auth: `ext.auth.*`
   - Dependency: `ext.dependency.*`
 - Extension lifecycle events: `ext.install`, `ext.upgrade`, `ext.promote`
+- Extensions installed from the official registry and carrying the `telemetry`
+  capability can report **declared usage attributes** via
+  `TelemetryService.ReportUsageAttribute`. Each accepted value becomes an
+  `ext.usage` span sharing the command's trace. The key and its allowed values
+  come from the extension's registry entry, not from azd core — see
+  [ADR-001](./adr-001-extension-telemetry-declarations.md).
 
 ## Consent & Privacy
 

@@ -11,7 +11,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/azure/azure-dev/cli/azd/pkg/azdext"
 	"github.com/azure/azure-dev/cli/azd/pkg/output"
 )
 
@@ -23,12 +22,6 @@ const (
 
 	// MetadataKeyNote adds a note line below the artifact output.
 	MetadataKeyNote = "note"
-
-	// MetadataKeyFromPackage marks an artifact supplied through the
-	// --from-package option rather than produced by azd. The canonical value
-	// lives in the SDK so core and extensions share a single definition. This
-	// is deployment payload provenance, not telemetry.
-	MetadataKeyFromPackage = azdext.ArtifactMetadataKeyFromPackage
 )
 
 // ArtifactKind represents well-known artifact types in the Azure Developer CLI

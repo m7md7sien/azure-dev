@@ -286,16 +286,11 @@ func (pa *PublishAction) Run(ctx context.Context) (*actions.ActionResult, error)
 			serviceContext := &project.ServiceContext{}
 
 			if pa.flags.FromPackage != "" {
-				// --from-package set, skip packaging and create package artifact.
-				// Mark it with generic provenance so a service target can tell a
-				// caller-supplied payload from one azd produced.
+				// --from-package set, skip packaging and create package artifact
 				err = serviceContext.Package.Add(&project.Artifact{
 					Kind:         determineArtifactKind(pa.flags.FromPackage),
 					Location:     pa.flags.FromPackage,
 					LocationKind: project.LocationKindLocal,
-					Metadata: map[string]string{
-						project.MetadataKeyFromPackage: "true",
-					},
 				})
 
 				if err != nil {

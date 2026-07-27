@@ -22,22 +22,21 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	TelemetryService_AddCommandUsageAttribute_FullMethodName = "/azdext.TelemetryService/AddCommandUsageAttribute"
+	TelemetryService_ReportUsageAttribute_FullMethodName = "/azdext.TelemetryService/ReportUsageAttribute"
 )
 
 // TelemetryServiceClient is the client API for TelemetryService service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 //
-// TelemetryService accepts reviewed, host-owned command usage attribute values
-// from authenticated extensions. The host validates the key and value against
-// an allowlist and attaches accepted values to the current command telemetry
-// event. Extensions cannot choose classification, purpose, hashing, or
-// aggregation.
+// TelemetryService accepts usage attribute values from authenticated
+// extensions. Every key and value must appear in the telemetry declaration
+// the extension published in the official azd registry, which is where those
+// fields are reviewed. The host decides which telemetry span a value lands on
+// and owns classification, purpose, hashing, and aggregation.
 type TelemetryServiceClient interface {
-	// AddCommandUsageAttribute adds one bounded value to a host-owned command
-	// usage attribute. Duplicate values are collapsed by the host.
-	AddCommandUsageAttribute(ctx context.Context, in *AddCommandUsageAttributeRequest, opts ...grpc.CallOption) (*AddCommandUsageAttributeResponse, error)
+	// ReportUsageAttribute reports one declared usage attribute value.
+	ReportUsageAttribute(ctx context.Context, in *ReportUsageAttributeRequest, opts ...grpc.CallOption) (*ReportUsageAttributeResponse, error)
 }
 
 type telemetryServiceClient struct {
@@ -48,10 +47,10 @@ func NewTelemetryServiceClient(cc grpc.ClientConnInterface) TelemetryServiceClie
 	return &telemetryServiceClient{cc}
 }
 
-func (c *telemetryServiceClient) AddCommandUsageAttribute(ctx context.Context, in *AddCommandUsageAttributeRequest, opts ...grpc.CallOption) (*AddCommandUsageAttributeResponse, error) {
+func (c *telemetryServiceClient) ReportUsageAttribute(ctx context.Context, in *ReportUsageAttributeRequest, opts ...grpc.CallOption) (*ReportUsageAttributeResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(AddCommandUsageAttributeResponse)
-	err := c.cc.Invoke(ctx, TelemetryService_AddCommandUsageAttribute_FullMethodName, in, out, cOpts...)
+	out := new(ReportUsageAttributeResponse)
+	err := c.cc.Invoke(ctx, TelemetryService_ReportUsageAttribute_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -62,15 +61,14 @@ func (c *telemetryServiceClient) AddCommandUsageAttribute(ctx context.Context, i
 // All implementations must embed UnimplementedTelemetryServiceServer
 // for forward compatibility.
 //
-// TelemetryService accepts reviewed, host-owned command usage attribute values
-// from authenticated extensions. The host validates the key and value against
-// an allowlist and attaches accepted values to the current command telemetry
-// event. Extensions cannot choose classification, purpose, hashing, or
-// aggregation.
+// TelemetryService accepts usage attribute values from authenticated
+// extensions. Every key and value must appear in the telemetry declaration
+// the extension published in the official azd registry, which is where those
+// fields are reviewed. The host decides which telemetry span a value lands on
+// and owns classification, purpose, hashing, and aggregation.
 type TelemetryServiceServer interface {
-	// AddCommandUsageAttribute adds one bounded value to a host-owned command
-	// usage attribute. Duplicate values are collapsed by the host.
-	AddCommandUsageAttribute(context.Context, *AddCommandUsageAttributeRequest) (*AddCommandUsageAttributeResponse, error)
+	// ReportUsageAttribute reports one declared usage attribute value.
+	ReportUsageAttribute(context.Context, *ReportUsageAttributeRequest) (*ReportUsageAttributeResponse, error)
 	mustEmbedUnimplementedTelemetryServiceServer()
 }
 
@@ -81,8 +79,8 @@ type TelemetryServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedTelemetryServiceServer struct{}
 
-func (UnimplementedTelemetryServiceServer) AddCommandUsageAttribute(context.Context, *AddCommandUsageAttributeRequest) (*AddCommandUsageAttributeResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method AddCommandUsageAttribute not implemented")
+func (UnimplementedTelemetryServiceServer) ReportUsageAttribute(context.Context, *ReportUsageAttributeRequest) (*ReportUsageAttributeResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ReportUsageAttribute not implemented")
 }
 func (UnimplementedTelemetryServiceServer) mustEmbedUnimplementedTelemetryServiceServer() {}
 func (UnimplementedTelemetryServiceServer) testEmbeddedByValue()                          {}
@@ -105,20 +103,20 @@ func RegisterTelemetryServiceServer(s grpc.ServiceRegistrar, srv TelemetryServic
 	s.RegisterService(&TelemetryService_ServiceDesc, srv)
 }
 
-func _TelemetryService_AddCommandUsageAttribute_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(AddCommandUsageAttributeRequest)
+func _TelemetryService_ReportUsageAttribute_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReportUsageAttributeRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(TelemetryServiceServer).AddCommandUsageAttribute(ctx, in)
+		return srv.(TelemetryServiceServer).ReportUsageAttribute(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: TelemetryService_AddCommandUsageAttribute_FullMethodName,
+		FullMethod: TelemetryService_ReportUsageAttribute_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(TelemetryServiceServer).AddCommandUsageAttribute(ctx, req.(*AddCommandUsageAttributeRequest))
+		return srv.(TelemetryServiceServer).ReportUsageAttribute(ctx, req.(*ReportUsageAttributeRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -131,8 +129,8 @@ var TelemetryService_ServiceDesc = grpc.ServiceDesc{
 	HandlerType: (*TelemetryServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
-			MethodName: "AddCommandUsageAttribute",
-			Handler:    _TelemetryService_AddCommandUsageAttribute_Handler,
+			MethodName: "ReportUsageAttribute",
+			Handler:    _TelemetryService_ReportUsageAttribute_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

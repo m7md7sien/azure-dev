@@ -23,12 +23,10 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/azure/azure-dev/cli/azd/internal"
-	"github.com/azure/azure-dev/cli/azd/internal/tracing"
 	"github.com/azure/azure-dev/cli/azd/pkg/account"
 	"github.com/azure/azure-dev/cli/azd/pkg/auth"
 	"github.com/azure/azure-dev/cli/azd/pkg/azapi"
 	"github.com/azure/azure-dev/cli/azd/pkg/azdext"
-	"github.com/azure/azure-dev/cli/azd/pkg/azdext/telemetry"
 	"github.com/azure/azure-dev/cli/azd/pkg/errorhandler"
 	"github.com/azure/azure-dev/cli/azd/pkg/extensions"
 	"github.com/azure/azure-dev/cli/azd/pkg/prompt"
@@ -37,6 +35,24 @@ import (
 // Test_Server_Start validates the start and stop flows of the gRPC server,
 // and confirms the expected behavior for authenticated and unauthenticated requests.
 func Test_Server_Start(t *testing.T) {
+	// The reporting extension is installed from the official registry and
+	// declares one bounded field, which is what the host validates against.
+	reportingExtension := &extensions.Extension{
+		Id:      "azd.internal.telemetry",
+		Version: "1.0.0",
+		Source:  extensions.MainRegistryName,
+		Capabilities: []extensions.CapabilityType{
+			extensions.TelemetryCapability,
+		},
+		Telemetry: []extensions.TelemetryFieldDeclaration{
+			{
+				Key:           "ext.azd.internal.telemetry.deploy.mode",
+				AllowedValues: []string{"code", "container"},
+			},
+		},
+		Namespace: "test",
+	}
+
 	server := NewServer(
 		azdext.UnimplementedProjectServiceServer{},
 		azdext.UnimplementedEnvironmentServiceServer{},
@@ -55,7 +71,7 @@ func Test_Server_Start(t *testing.T) {
 		azdext.UnimplementedCopilotServiceServer{},
 		azdext.UnimplementedProvisioningServiceServer{},
 		azdext.UnimplementedValidationServiceServer{},
-		NewTelemetryService(),
+		newTelemetryService(stubExtensionLookup{reportingExtension}),
 	)
 
 	serverInfo, err := server.Start()
@@ -124,37 +140,36 @@ func Test_Server_Start(t *testing.T) {
 	})
 
 	t.Run("TelemetryAccepted", func(t *testing.T) {
-		tracing.ResetCommandUsageForTest()
-		t.Cleanup(tracing.ResetCommandUsageForTest)
-
-		stExtension := &extensions.Extension{
-			Id: "azd.internal.telemetry",
-			Capabilities: []extensions.CapabilityType{
-				extensions.ServiceTargetProviderCapability,
-			},
-			Namespace: "test",
-		}
-		accessToken, err := GenerateExtensionToken(stExtension, serverInfo)
+		accessToken, err := GenerateExtensionToken(reportingExtension, serverInfo)
 		require.NoError(t, err)
 
 		ctx := azdext.WithAccessToken(t.Context(), accessToken)
 		client, err := azdext.NewAzdClient(azdext.WithAddress(serverInfo.Address))
 		require.NoError(t, err)
 
-		// The server runs in-process, so the handler writes to this scope.
-		scope := tracing.BeginCommandUsageScope("cmd.deploy")
-
-		resp, err := client.Telemetry().AddCommandUsageAttribute(ctx, &azdext.AddCommandUsageAttributeRequest{
-			Key:   telemetry.AgentDeploymentModeAttribute,
-			Value: string(telemetry.AgentDeploymentModeCode),
+		resp, err := client.Telemetry().ReportUsageAttribute(ctx, &azdext.ReportUsageAttributeRequest{
+			Key:   "ext.azd.internal.telemetry.deploy.mode",
+			Value: "code",
 		})
 		require.NoError(t, err)
 		require.True(t, resp.Accepted)
+	})
 
-		attrs, err := tracing.CloseCommandUsageScope(scope)
+	t.Run("TelemetryUndeclaredValue", func(t *testing.T) {
+		accessToken, err := GenerateExtensionToken(reportingExtension, serverInfo)
 		require.NoError(t, err)
-		require.Len(t, attrs, 1)
-		require.Equal(t, []string{"code"}, attrs[0].Value.AsStringSlice())
+
+		ctx := azdext.WithAccessToken(t.Context(), accessToken)
+		client, err := azdext.NewAzdClient(azdext.WithAddress(serverInfo.Address))
+		require.NoError(t, err)
+
+		_, err = client.Telemetry().ReportUsageAttribute(ctx, &azdext.ReportUsageAttributeRequest{
+			Key:   "ext.azd.internal.telemetry.deploy.mode",
+			Value: "byo_image",
+		})
+		st, ok := status.FromError(err)
+		require.True(t, ok)
+		require.Equal(t, codes.InvalidArgument, st.Code())
 	})
 
 	t.Run("TelemetryMissingCapability", func(t *testing.T) {
@@ -166,9 +181,9 @@ func Test_Server_Start(t *testing.T) {
 		client, err := azdext.NewAzdClient(azdext.WithAddress(serverInfo.Address))
 		require.NoError(t, err)
 
-		_, err = client.Telemetry().AddCommandUsageAttribute(ctx, &azdext.AddCommandUsageAttributeRequest{
-			Key:   telemetry.AgentDeploymentModeAttribute,
-			Value: string(telemetry.AgentDeploymentModeCode),
+		_, err = client.Telemetry().ReportUsageAttribute(ctx, &azdext.ReportUsageAttributeRequest{
+			Key:   "ext.azd.internal.telemetry.deploy.mode",
+			Value: "code",
 		})
 		st, ok := status.FromError(err)
 		require.True(t, ok)
@@ -179,11 +194,11 @@ func Test_Server_Start(t *testing.T) {
 		client, err := azdext.NewAzdClient(azdext.WithAddress(serverInfo.Address))
 		require.NoError(t, err)
 
-		_, err = client.Telemetry().AddCommandUsageAttribute(
+		_, err = client.Telemetry().ReportUsageAttribute(
 			t.Context(),
-			&azdext.AddCommandUsageAttributeRequest{
-				Key:   telemetry.AgentDeploymentModeAttribute,
-				Value: string(telemetry.AgentDeploymentModeCode),
+			&azdext.ReportUsageAttributeRequest{
+				Key:   "ext.azd.internal.telemetry.deploy.mode",
+				Value: "code",
 			},
 		)
 		st, ok := status.FromError(err)
@@ -470,11 +485,11 @@ func requireAuthErrorInfo(t *testing.T, st *status.Status) *errdetails.ErrorInfo
 	return nil
 }
 
-func TestAuthenticatedStream_Context(t *testing.T) {
+func TestContextStream_Context(t *testing.T) {
 	t.Parallel()
 	ctx := context.WithValue(t.Context(), struct{ key string }{key: "test"}, "value")
 
-	stream := &authenticatedStream{
+	stream := &contextStream{
 		ctx: ctx,
 	}
 

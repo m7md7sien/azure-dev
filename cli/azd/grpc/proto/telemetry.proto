@@ -6,28 +6,26 @@ package azdext;
 
 option go_package = "github.com/azure/azure-dev/cli/azd/pkg/azdext";
 
-// TelemetryService accepts reviewed, host-owned command usage attribute values
-// from authenticated extensions. The host validates the key and value against
-// an allowlist and attaches accepted values to the current command telemetry
-// event. Extensions cannot choose classification, purpose, hashing, or
-// aggregation.
+// TelemetryService accepts usage attribute values from authenticated
+// extensions. Every key and value must appear in the telemetry declaration
+// the extension published in the official azd registry, which is where those
+// fields are reviewed. The host decides which telemetry span a value lands on
+// and owns classification, purpose, hashing, and aggregation.
 service TelemetryService {
-  // AddCommandUsageAttribute adds one bounded value to a host-owned command
-  // usage attribute. Duplicate values are collapsed by the host.
-  rpc AddCommandUsageAttribute(AddCommandUsageAttributeRequest)
-      returns (AddCommandUsageAttributeResponse);
+  // ReportUsageAttribute reports one declared usage attribute value.
+  rpc ReportUsageAttribute(ReportUsageAttributeRequest)
+      returns (ReportUsageAttributeResponse);
 }
 
-message AddCommandUsageAttributeRequest {
-  // Key must be registered and owned by the host.
+message ReportUsageAttributeRequest {
+  // Key must match a telemetry field the extension declared in the registry.
   string key = 1;
 
-  // Value must be in the host-owned allowed set for key.
+  // Value must be in the allowed set the extension declared for key.
   string value = 2;
 }
 
-message AddCommandUsageAttributeResponse {
-  // Accepted is false when the value was rejected because no eligible command
-  // scope is currently active. A false response is not an error.
+message ReportUsageAttributeResponse {
+  // Accepted reports whether the host recorded the value.
   bool accepted = 1;
 }

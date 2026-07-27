@@ -9,11 +9,23 @@ import (
 	"os"
 	"strings"
 
+	"go.opentelemetry.io/otel/propagation"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	_ "google.golang.org/grpc/encoding/gzip" // registers gzip compressor for gRPC streams
 	"google.golang.org/grpc/metadata"
+)
+
+// W3C trace context carriers. The gRPC metadata keys match the HTTP header
+// names; the environment variables are what azd sets on the extension
+// process.
+const (
+	traceparentHeader = "traceparent"
+	tracestateHeader  = "tracestate"
+
+	traceparentEnv = "TRACEPARENT"
+	tracestateEnv  = "TRACESTATE"
 )
 
 type AzdClientOption func(*AzdClient) error
@@ -82,15 +94,47 @@ func isLocalhostAddress(address string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// WithAccessToken sets the access token for the `azd` client into a new Go context.
+// WithAccessToken sets the access token for the `azd` client into a new Go
+// context. It also forwards the W3C trace context so telemetry the host
+// records while serving the call joins the azd command's trace instead of
+// starting an unrelated one.
 func WithAccessToken(ctx context.Context, params ...string) context.Context {
 	tokenValue := strings.Join(params, "")
 	if tokenValue == "" {
 		tokenValue = os.Getenv("AZD_ACCESS_TOKEN")
 	}
 
-	md := metadata.Pairs("authorization", tokenValue)
-	return metadata.NewOutgoingContext(ctx, md)
+	pairs := append([]string{"authorization", tokenValue}, traceContextPairs(ctx)...)
+
+	return metadata.NewOutgoingContext(ctx, metadata.Pairs(pairs...))
+}
+
+// traceContextPairs returns W3C trace context metadata pairs. A span already
+// on ctx wins; otherwise the TRACEPARENT/TRACESTATE variables azd sets on the
+// extension process are used, which is the common case because extensions
+// build their context from scratch.
+func traceContextPairs(ctx context.Context) []string {
+	carrier := propagation.MapCarrier{}
+	propagation.TraceContext{}.Inject(ctx, carrier)
+
+	parent := carrier.Get(traceparentHeader)
+	state := carrier.Get(tracestateHeader)
+
+	if parent == "" {
+		parent = os.Getenv(traceparentEnv)
+		state = os.Getenv(tracestateEnv)
+	}
+
+	if parent == "" {
+		return nil
+	}
+
+	pairs := []string{traceparentHeader, parent}
+	if state != "" {
+		pairs = append(pairs, tracestateHeader, state)
+	}
+
+	return pairs
 }
 
 // NewAzdClient creates a new `azd` client.

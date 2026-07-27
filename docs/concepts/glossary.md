@@ -62,7 +62,11 @@ A JSON manifest that lists available extensions, their versions, capabilities, a
 
 ### Extension Capabilities
 
-The set of features an extension provides. Valid capabilities are: `custom-commands`, `lifecycle-events`, `mcp-server`, `service-target-provider`, `framework-service-provider`, `provisioning-provider`, and `metadata`. See [Extension Framework](../architecture/extension-framework.md) for details.
+The set of features an extension provides. Valid capabilities are: `custom-commands`, `lifecycle-events`, `mcp-server`, `service-target-provider`, `framework-service-provider`, `provisioning-provider`, `validation-provider`, `metadata`, and `telemetry`. See [Extension Framework](../architecture/extension-framework.md) for details.
+
+### Telemetry Declaration
+
+The `telemetry` array in an extension's registry entry, listing each usage attribute key the extension may report and the closed set of values allowed for it. `azd` core owns no product-specific telemetry fields; it only enforces what the registry declares. See [ADR-001](../architecture/adr-001-extension-telemetry-declarations.md).
 
 ### Provisioning Provider
 

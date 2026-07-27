@@ -4,245 +4,230 @@
 package grpcserver
 
 import (
-	"context"
 	"strings"
-	"sync"
 	"testing"
 
+	"github.com/azure/azure-dev/cli/azd/pkg/azdext"
+	"github.com/azure/azure-dev/cli/azd/pkg/extensions"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-
-	"github.com/azure/azure-dev/cli/azd/internal/tracing"
-	"github.com/azure/azure-dev/cli/azd/internal/tracing/fields"
-	"github.com/azure/azure-dev/cli/azd/pkg/azdext"
-	"github.com/azure/azure-dev/cli/azd/pkg/azdext/telemetry"
-	"github.com/azure/azure-dev/cli/azd/pkg/extensions"
 )
 
-func claimsContext(caps ...extensions.CapabilityType) context.Context {
-	claims := &extensions.ExtensionClaims{
-		RegisteredClaims: jwt.RegisteredClaims{Subject: "test.extension"},
-		Capabilities:     caps,
+const testTelemetryKey = "ext.azd.internal.telemetry.deploy.mode"
+
+// stubExtensionLookup returns a fixed installed extension record, or a
+// not-found error when the requested id does not match.
+type stubExtensionLookup struct {
+	extension *extensions.Extension
+}
+
+func (s stubExtensionLookup) GetInstalled(
+	options extensions.FilterOptions,
+) (*extensions.Extension, error) {
+	if s.extension == nil || s.extension.Id != options.Id {
+		return nil, extensions.ErrInstalledExtensionNotFound
 	}
-	return extensions.WithClaimsContext(context.Background(), claims)
+
+	return s.extension, nil
 }
 
-func serviceTargetClaims() context.Context {
-	return claimsContext(extensions.ServiceTargetProviderCapability)
-}
-
-func validRequest(value string) *azdext.AddCommandUsageAttributeRequest {
-	return &azdext.AddCommandUsageAttributeRequest{
-		Key:   telemetry.AgentDeploymentModeAttribute,
-		Value: value,
-	}
-}
-
-func TestTelemetryService_MissingClaims(t *testing.T) {
-	tracing.ResetCommandUsageForTest()
-	t.Cleanup(tracing.ResetCommandUsageForTest)
-
-	svc := NewTelemetryService()
-	_, err := svc.AddCommandUsageAttribute(context.Background(), validRequest("code"))
-	require.Equal(t, codes.Unauthenticated, status.Code(err))
-}
-
-func TestTelemetryService_MissingCapability(t *testing.T) {
-	tracing.ResetCommandUsageForTest()
-	t.Cleanup(tracing.ResetCommandUsageForTest)
-
-	scope := tracing.BeginCommandUsageScope("cmd.deploy")
-	t.Cleanup(func() { _, _ = tracing.CloseCommandUsageScope(scope) })
-
-	svc := NewTelemetryService()
-	// Authenticated but without the service-target-provider capability.
-	_, err := svc.AddCommandUsageAttribute(claimsContext(), validRequest("code"))
-	require.Equal(t, codes.PermissionDenied, status.Code(err))
-}
-
-func TestTelemetryService_InvalidArguments(t *testing.T) {
-	tracing.ResetCommandUsageForTest()
-	t.Cleanup(tracing.ResetCommandUsageForTest)
-
-	svc := NewTelemetryService()
-	ctx := serviceTargetClaims()
-
-	cases := map[string]*azdext.AddCommandUsageAttributeRequest{
-		"nil request":  nil,
-		"empty key":    {Key: "", Value: "code"},
-		"empty value":  {Key: telemetry.AgentDeploymentModeAttribute, Value: ""},
-		"oversize key": {Key: strings.Repeat("k", maxTelemetryFieldLength+1), Value: "code"},
-		"oversize value": {
-			Key:   telemetry.AgentDeploymentModeAttribute,
-			Value: strings.Repeat("v", maxTelemetryFieldLength+1),
+func testExtension() *extensions.Extension {
+	return &extensions.Extension{
+		Id:      "azd.internal.telemetry",
+		Version: "1.0.0",
+		Source:  extensions.MainRegistryName,
+		Capabilities: []extensions.CapabilityType{
+			extensions.TelemetryCapability,
 		},
-		"unknown key":  {Key: "some.other.key", Value: "code"},
-		"invalid enum": validRequest("bogus"),
-	}
-
-	for name, req := range cases {
-		t.Run(name, func(t *testing.T) {
-			_, err := svc.AddCommandUsageAttribute(ctx, req)
-			require.Equal(t, codes.InvalidArgument, status.Code(err), "case %q", name)
-		})
+		Telemetry: []extensions.TelemetryFieldDeclaration{
+			{
+				Key:           testTelemetryKey,
+				AllowedValues: []string{"code", "container"},
+			},
+		},
 	}
 }
 
-func TestTelemetryService_InvalidPolicyIsInternal(t *testing.T) {
-	tracing.ResetCommandUsageForTest()
-	t.Cleanup(tracing.ResetCommandUsageForTest)
+// callWith runs the handler as the given extension, mirroring how the auth
+// interceptor injects host-signed claims.
+func callWith(
+	t *testing.T,
+	extension *extensions.Extension,
+	req *azdext.ReportUsageAttributeRequest,
+) (*azdext.ReportUsageAttributeResponse, error) {
+	t.Helper()
 
-	ctx := serviceTargetClaims()
-	capSet := map[extensions.CapabilityType]struct{}{
-		extensions.ServiceTargetProviderCapability: {},
-	}
-
-	t.Run("empty allowed values", func(t *testing.T) {
-		svc := newTelemetryService(map[string]commandUsageFieldPolicy{
-			telemetry.AgentDeploymentModeAttribute: {
-				key:                  fields.AgentDeploymentModeKey,
-				allowedValues:        map[string]struct{}{},
-				eligibleEvents:       map[string]struct{}{"cmd.deploy": {}},
-				requiredCapabilities: capSet,
-			},
-		})
-		_, err := svc.AddCommandUsageAttribute(ctx, validRequest("code"))
-		require.Equal(t, codes.Internal, status.Code(err))
+	service := newTelemetryService(stubExtensionLookup{extension})
+	ctx := extensions.WithClaimsContext(t.Context(), &extensions.ExtensionClaims{
+		RegisteredClaims: jwt.RegisteredClaims{Subject: extension.Id},
+		Capabilities:     extension.Capabilities,
+		Source:           extension.Source,
 	})
 
-	t.Run("empty eligible events", func(t *testing.T) {
-		svc := newTelemetryService(map[string]commandUsageFieldPolicy{
-			telemetry.AgentDeploymentModeAttribute: {
-				key:                  fields.AgentDeploymentModeKey,
-				allowedValues:        map[string]struct{}{"code": {}},
-				eligibleEvents:       map[string]struct{}{},
-				requiredCapabilities: capSet,
-			},
-		})
-		_, err := svc.AddCommandUsageAttribute(ctx, validRequest("code"))
-		require.Equal(t, codes.Internal, status.Code(err))
-	})
+	return service.ReportUsageAttribute(ctx, req)
 }
 
-func TestTelemetryService_EligibleScopesAccept(t *testing.T) {
-	for _, eventName := range []string{"cmd.deploy", "cmd.up"} {
-		t.Run(eventName, func(t *testing.T) {
-			tracing.ResetCommandUsageForTest()
-			t.Cleanup(tracing.ResetCommandUsageForTest)
+func requireCode(t *testing.T, err error, expected codes.Code) {
+	t.Helper()
 
-			scope := tracing.BeginCommandUsageScope(eventName)
-			svc := NewTelemetryService()
-
-			resp, err := svc.AddCommandUsageAttribute(serviceTargetClaims(), validRequest("code"))
-			require.NoError(t, err)
-			require.True(t, resp.Accepted)
-
-			attrs, err := tracing.CloseCommandUsageScope(scope)
-			require.NoError(t, err)
-			require.Len(t, attrs, 1)
-			require.Equal(t, telemetry.AgentDeploymentModeAttribute, string(attrs[0].Key))
-			require.Equal(t, []string{"code"}, attrs[0].Value.AsStringSlice())
-		})
-	}
+	st, ok := status.FromError(err)
+	require.True(t, ok)
+	require.Equal(t, expected, st.Code())
 }
 
-func TestTelemetryService_IneligibleScopeNotAccepted(t *testing.T) {
-	tracing.ResetCommandUsageForTest()
-	t.Cleanup(tracing.ResetCommandUsageForTest)
-
-	scope := tracing.BeginCommandUsageScope("cmd.package")
-	svc := NewTelemetryService()
-
-	resp, err := svc.AddCommandUsageAttribute(serviceTargetClaims(), validRequest("code"))
-	require.NoError(t, err)
-	require.False(t, resp.Accepted)
-
-	attrs, err := tracing.CloseCommandUsageScope(scope)
-	require.NoError(t, err)
-	require.Empty(t, attrs)
-}
-
-func TestTelemetryService_NoActiveScopeNotAccepted(t *testing.T) {
-	tracing.ResetCommandUsageForTest()
-	t.Cleanup(tracing.ResetCommandUsageForTest)
-
-	svc := NewTelemetryService()
-	resp, err := svc.AddCommandUsageAttribute(serviceTargetClaims(), validRequest("code"))
-	require.NoError(t, err)
-	require.False(t, resp.Accepted)
-}
-
-func TestTelemetryService_DuplicateCollapses(t *testing.T) {
-	tracing.ResetCommandUsageForTest()
-	t.Cleanup(tracing.ResetCommandUsageForTest)
-
-	scope := tracing.BeginCommandUsageScope("cmd.deploy")
-	svc := NewTelemetryService()
-	ctx := serviceTargetClaims()
-
-	for range 3 {
-		resp, err := svc.AddCommandUsageAttribute(ctx, validRequest("code"))
-		require.NoError(t, err)
-		require.True(t, resp.Accepted)
-	}
-
-	attrs, err := tracing.CloseCommandUsageScope(scope)
-	require.NoError(t, err)
-	require.Len(t, attrs, 1)
-	require.Equal(t, []string{"code"}, attrs[0].Value.AsStringSlice())
-}
-
-func TestTelemetryService_ConcurrentReports(t *testing.T) {
-	tracing.ResetCommandUsageForTest()
-	t.Cleanup(tracing.ResetCommandUsageForTest)
-
-	scope := tracing.BeginCommandUsageScope("cmd.up")
-	svc := NewTelemetryService()
-	ctx := serviceTargetClaims()
-
-	modes := []string{"code", "container", "byo_image"}
-	var wg sync.WaitGroup
-	for i := range 60 {
-		value := modes[i%len(modes)]
-		wg.Go(func() {
-			_, err := svc.AddCommandUsageAttribute(ctx, validRequest(value))
-			require.NoError(t, err)
-		})
-	}
-	wg.Wait()
-
-	attrs, err := tracing.CloseCommandUsageScope(scope)
-	require.NoError(t, err)
-	require.Len(t, attrs, 1)
-	require.ElementsMatch(t, modes, attrs[0].Value.AsStringSlice())
-}
-
-// TestExtensionUsageFieldsInvariants guards the production allowlist so a future
-// field cannot accidentally open a free-form or unauthenticated path.
-func TestExtensionUsageFieldsInvariants(t *testing.T) {
+func Test_TelemetryService_AcceptsDeclaredValue(t *testing.T) {
 	t.Parallel()
 
-	require.NotEmpty(t, extensionUsageFields)
+	resp, err := callWith(t, testExtension(), &azdext.ReportUsageAttributeRequest{
+		Key:   testTelemetryKey,
+		Value: "container",
+	})
 
-	for registryKey, policy := range extensionUsageFields {
-		require.NotEmpty(t, registryKey)
-		require.Equal(t, registryKey, string(policy.key.Key),
-			"policy key must match its registry key")
-		require.NotEmpty(t, string(policy.key.Classification), "classification must be set")
-		require.NotEmpty(t, string(policy.key.Purpose), "purpose must be set")
+	require.NoError(t, err)
+	require.True(t, resp.Accepted)
+}
 
-		require.NotEmpty(t, policy.allowedValues, "allowed values must be set")
-		for value := range policy.allowedValues {
-			require.NotEmpty(t, value, "allowed value must not be empty")
-		}
+func Test_TelemetryService_RequiresClaims(t *testing.T) {
+	t.Parallel()
 
-		require.NotEmpty(t, policy.eligibleEvents, "eligible events must be set")
-		for event := range policy.eligibleEvents {
-			require.NotEmpty(t, event, "eligible event must not be empty")
-		}
+	service := newTelemetryService(stubExtensionLookup{testExtension()})
+	_, err := service.ReportUsageAttribute(t.Context(), &azdext.ReportUsageAttributeRequest{
+		Key:   testTelemetryKey,
+		Value: "code",
+	})
 
-		require.NotEmpty(t, policy.requiredCapabilities, "required capabilities must be set")
+	requireCode(t, err, codes.Unauthenticated)
+}
+
+func Test_TelemetryService_RejectsInvalidRequests(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]*azdext.ReportUsageAttributeRequest{
+		"nil":         nil,
+		"empty key":   {Key: "", Value: "code"},
+		"empty value": {Key: testTelemetryKey, Value: ""},
+		"long key": {
+			Key:   strings.Repeat("k", extensions.MaxTelemetryKeyLength+1),
+			Value: "code",
+		},
+		"long value": {
+			Key:   testTelemetryKey,
+			Value: strings.Repeat("v", extensions.MaxTelemetryValueLength+1),
+		},
 	}
+
+	for name, req := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := callWith(t, testExtension(), req)
+			requireCode(t, err, codes.InvalidArgument)
+		})
+	}
+}
+
+func Test_TelemetryService_RejectsUnofficialSource(t *testing.T) {
+	t.Parallel()
+
+	extension := testExtension()
+	extension.Source = "dev"
+
+	_, err := callWith(t, extension, &azdext.ReportUsageAttributeRequest{
+		Key:   testTelemetryKey,
+		Value: "code",
+	})
+
+	requireCode(t, err, codes.PermissionDenied)
+}
+
+func Test_TelemetryService_RejectsMissingSource(t *testing.T) {
+	t.Parallel()
+
+	// An install predating source tracking must fail closed rather than be
+	// treated as coming from the official registry.
+	extension := testExtension()
+	extension.Source = ""
+
+	_, err := callWith(t, extension, &azdext.ReportUsageAttributeRequest{
+		Key:   testTelemetryKey,
+		Value: "code",
+	})
+
+	requireCode(t, err, codes.PermissionDenied)
+}
+
+func Test_TelemetryService_RejectsMissingCapability(t *testing.T) {
+	t.Parallel()
+
+	extension := testExtension()
+	extension.Capabilities = []extensions.CapabilityType{
+		extensions.CustomCommandCapability,
+	}
+
+	_, err := callWith(t, extension, &azdext.ReportUsageAttributeRequest{
+		Key:   testTelemetryKey,
+		Value: "code",
+	})
+
+	requireCode(t, err, codes.PermissionDenied)
+}
+
+func Test_TelemetryService_RejectsUninstalledExtension(t *testing.T) {
+	t.Parallel()
+
+	service := newTelemetryService(stubExtensionLookup{})
+	ctx := extensions.WithClaimsContext(t.Context(), &extensions.ExtensionClaims{
+		RegisteredClaims: jwt.RegisteredClaims{Subject: "azd.internal.telemetry"},
+		Capabilities:     []extensions.CapabilityType{extensions.TelemetryCapability},
+		Source:           extensions.MainRegistryName,
+	})
+
+	_, err := service.ReportUsageAttribute(ctx, &azdext.ReportUsageAttributeRequest{
+		Key:   testTelemetryKey,
+		Value: "code",
+	})
+
+	requireCode(t, err, codes.PermissionDenied)
+}
+
+func Test_TelemetryService_RejectsUndeclaredKeyOrValue(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]*azdext.ReportUsageAttributeRequest{
+		"undeclared key":   {Key: "ext.azd.internal.telemetry.other", Value: "code"},
+		"undeclared value": {Key: testTelemetryKey, Value: "byo_image"},
+		"core key":         {Key: "agent.deploy.mode", Value: "code"},
+	}
+
+	for name, req := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := callWith(t, testExtension(), req)
+			requireCode(t, err, codes.InvalidArgument)
+		})
+	}
+}
+
+func Test_TelemetryService_RejectsTamperedDeclaration(t *testing.T) {
+	t.Parallel()
+
+	// The installed record lives in user config, so a locally widened
+	// declaration must be rejected instead of trusted.
+	extension := testExtension()
+	extension.Telemetry = []extensions.TelemetryFieldDeclaration{
+		{
+			Key:           "agent.deploy.mode",
+			AllowedValues: []string{"code"},
+		},
+	}
+
+	_, err := callWith(t, extension, &azdext.ReportUsageAttributeRequest{
+		Key:   "agent.deploy.mode",
+		Value: "code",
+	})
+
+	requireCode(t, err, codes.FailedPrecondition)
 }
