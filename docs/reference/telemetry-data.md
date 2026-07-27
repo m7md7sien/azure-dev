@@ -74,6 +74,7 @@ Commands follow the pattern `cmd.<command.path>` where spaces become dots.
 | `ext.install` | Extension installation |
 | `ext.upgrade` | Extension upgrade attempt |
 | `ext.promote` | Registry promotion (e.g., dev → main) |
+| `ext.usage` | Usage attribute reported by an extension, limited to the values declared in its official registry entry |
 
 ### Agent & Copilot Events
 

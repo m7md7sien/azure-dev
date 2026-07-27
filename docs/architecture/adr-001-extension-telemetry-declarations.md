@@ -57,8 +57,9 @@ just no longer occupies a core release slot.
   extension; `azd` core does not ship.
 - `azd` core contains zero product semantics for extension telemetry. The
   schema documents one class of field rather than one row per product concept.
-- The trust boundary is explicit and signed: capability plus official-registry
-  source, both host-issued rather than self-reported.
+- The trust boundary is explicit: the capability and the install `Source` are
+  carried in host-signed claims, so an extension cannot assert either of them
+  on the request itself.
 
 **More difficult**
 
@@ -70,6 +71,10 @@ just no longer occupies a core release slot.
 - Trace context has to cross the gRPC boundary for that join to work, so the
   extension SDK now forwards the W3C trace context headers and the server
   extracts them.
+- Those claims are signed from the installed record, which lives in
+  user-writable config. This is the same trust level every existing capability
+  gate already depends on, so the feature does not weaken it, but it is not
+  proof of provenance. Hardening the installed record is tracked separately.
 
 ## Alternatives Considered
 
