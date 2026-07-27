@@ -6,7 +6,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "5428399781259274778"
+      "templateHash": "5592084794470851297"
     }
   },
   "definitions": {
@@ -140,6 +140,53 @@
         "description": "Container registry name. 5-50 alphanumeric chars. Required when includeAcr is true."
       }
     },
+    "acrMode": {
+      "type": "string",
+      "defaultValue": "[if(parameters('includeAcr'), 'create', 'none')]",
+      "allowedValues": [
+        "none",
+        "create",
+        "existing"
+      ],
+      "metadata": {
+        "description": "ACR ownership mode. Existing registries are referenced, never created."
+      }
+    },
+    "existingAcrSubscriptionId": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Subscription containing an existing ACR."
+      }
+    },
+    "existingAcrResourceGroup": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Resource group containing an existing ACR."
+      }
+    },
+    "existingAcrName": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Name of an existing ACR."
+      }
+    },
+    "existingAcrEndpoint": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Login server of an existing ACR."
+      }
+    },
+    "existingAcrConnectionName": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Existing Foundry ACR connection name. Empty creates the missing RBAC and connection."
+      }
+    },
     "connections": {
       "$ref": "#/definitions/connectionsType",
       "defaultValue": [],
@@ -156,6 +203,9 @@
     }
   },
   "variables": {
+    "createAcr": "[equals(parameters('acrMode'), 'create')]",
+    "useExistingAcr": "[equals(parameters('acrMode'), 'existing')]",
+    "configureAcr": "[or(variables('createAcr'), and(variables('useExistingAcr'), empty(parameters('existingAcrConnectionName'))))]",
     "acrPullRoleId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d')]"
   },
   "resources": {
@@ -193,7 +243,7 @@
       "name": "[parameters('accountName')]"
     },
     "registry": {
-      "condition": "[parameters('includeAcr')]",
+      "condition": "[variables('createAcr')]",
       "type": "Microsoft.ContainerRegistry/registries",
       "apiVersion": "2023-07-01",
       "name": "[parameters('acrName')]",
@@ -211,27 +261,37 @@
         "zoneRedundancy": "Disabled"
       }
     },
+    "existingRegistry": {
+      "condition": "[variables('useExistingAcr')]",
+      "existing": true,
+      "type": "Microsoft.ContainerRegistry/registries",
+      "apiVersion": "2023-07-01",
+      "subscriptionId": "[parameters('existingAcrSubscriptionId')]",
+      "resourceGroup": "[parameters('existingAcrResourceGroup')]",
+      "name": "[parameters('existingAcrName')]"
+    },
     "acrConnection": {
-      "condition": "[parameters('includeAcr')]",
+      "condition": "[variables('configureAcr')]",
       "type": "Microsoft.CognitiveServices/accounts/projects/connections",
       "apiVersion": "2025-04-01-preview",
-      "name": "[format('{0}/{1}/{2}-conn', parameters('accountName'), parameters('projectName'), parameters('acrName'))]",
+      "name": "[format('{0}/{1}/{2}-conn', parameters('accountName'), parameters('projectName'), if(variables('createAcr'), parameters('acrName'), parameters('existingAcrName')))]",
       "properties": {
         "category": "ContainerRegistry",
-        "target": "[reference('registry').loginServer]",
+        "target": "[if(variables('createAcr'), reference('registry').loginServer, parameters('existingAcrEndpoint'))]",
         "authType": "ManagedIdentity",
         "credentials": {
           "clientId": "[reference('foundryAccountPreview::project', '2025-04-01-preview', 'full').identity.principalId]",
-          "resourceId": "[resourceId('Microsoft.ContainerRegistry/registries', parameters('acrName'))]"
+          "resourceId": "[if(variables('createAcr'), resourceId('Microsoft.ContainerRegistry/registries', parameters('acrName')), extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', parameters('existingAcrSubscriptionId'), parameters('existingAcrResourceGroup')), 'Microsoft.ContainerRegistry/registries', parameters('existingAcrName')))]"
         },
         "isSharedToAll": true,
         "metadata": {
-          "ResourceId": "[resourceId('Microsoft.ContainerRegistry/registries', parameters('acrName'))]"
+          "ResourceId": "[if(variables('createAcr'), resourceId('Microsoft.ContainerRegistry/registries', parameters('acrName')), extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', parameters('existingAcrSubscriptionId'), parameters('existingAcrResourceGroup')), 'Microsoft.ContainerRegistry/registries', parameters('existingAcrName')))]"
         }
       },
       "dependsOn": [
         "foundryAccountPreview::project",
-        "foundryAcrPull",
+        "foundryAcrPullExisting",
+        "foundryAcrPullNew",
         "registry"
       ]
     },
@@ -245,11 +305,11 @@
       "name": "[format('{0}/{1}/{2}', parameters('accountName'), parameters('projectName'), parameters('connections')[copyIndex()].name)]",
       "properties": "[union(createObject('category', parameters('connections')[copyIndex()].category, 'target', parameters('connections')[copyIndex()].target, 'authType', parameters('connections')[copyIndex()].authType), if(contains(parameters('connectionCredentials'), parameters('connections')[copyIndex()].name), createObject('credentials', parameters('connectionCredentials')[parameters('connections')[copyIndex()].name]), createObject()), if(not(equals(tryGet(parameters('connections')[copyIndex()], 'metadata'), null())), createObject('metadata', tryGet(parameters('connections')[copyIndex()], 'metadata')), createObject()))]"
     },
-    "foundryAcrPull": {
-      "condition": "[parameters('includeAcr')]",
+    "foundryAcrPullNew": {
+      "condition": "[variables('createAcr')]",
       "type": "Microsoft.Resources/deployments",
       "apiVersion": "2025-04-01",
-      "name": "foundry-acr-pull",
+      "name": "foundry-acr-pull-new",
       "properties": {
         "expressionEvaluationOptions": {
           "scope": "inner"
@@ -315,20 +375,92 @@
         "foundryAccountPreview::project",
         "registry"
       ]
+    },
+    "foundryAcrPullExisting": {
+      "condition": "[and(variables('useExistingAcr'), empty(parameters('existingAcrConnectionName')))]",
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2025-04-01",
+      "name": "foundry-acr-pull-existing",
+      "subscriptionId": "[parameters('existingAcrSubscriptionId')]",
+      "resourceGroup": "[parameters('existingAcrResourceGroup')]",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "registryName": {
+            "value": "[parameters('existingAcrName')]"
+          },
+          "principalId": {
+            "value": "[reference('foundryAccountPreview::project', '2025-04-01-preview', 'full').identity.principalId]"
+          },
+          "roleDefinitionId": {
+            "value": "[variables('acrPullRoleId')]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.44.1.10279",
+              "templateHash": "16037481882754055301"
+            }
+          },
+          "parameters": {
+            "registryName": {
+              "type": "string",
+              "metadata": {
+                "description": "Name of the Azure Container Registry."
+              }
+            },
+            "principalId": {
+              "type": "string",
+              "metadata": {
+                "description": "Principal receiving AcrPull on the registry."
+              }
+            },
+            "roleDefinitionId": {
+              "type": "string",
+              "metadata": {
+                "description": "AcrPull role definition resource ID."
+              }
+            }
+          },
+          "resources": [
+            {
+              "type": "Microsoft.Authorization/roleAssignments",
+              "apiVersion": "2022-04-01",
+              "scope": "[resourceId('Microsoft.ContainerRegistry/registries', parameters('registryName'))]",
+              "name": "[guid(resourceId('Microsoft.ContainerRegistry/registries', parameters('registryName')), parameters('principalId'), parameters('roleDefinitionId'))]",
+              "properties": {
+                "principalId": "[parameters('principalId')]",
+                "principalType": "ServicePrincipal",
+                "roleDefinitionId": "[parameters('roleDefinitionId')]"
+              }
+            }
+          ]
+        }
+      },
+      "dependsOn": [
+        "foundryAccountPreview::project"
+      ]
     }
   },
   "outputs": {
     "AZURE_CONTAINER_REGISTRY_ENDPOINT": {
       "type": "string",
-      "value": "[if(parameters('includeAcr'), reference('registry').loginServer, '')]"
+      "value": "[if(variables('createAcr'), reference('registry').loginServer, if(variables('useExistingAcr'), parameters('existingAcrEndpoint'), ''))]"
     },
     "AZURE_CONTAINER_REGISTRY_RESOURCE_ID": {
       "type": "string",
-      "value": "[if(parameters('includeAcr'), resourceId('Microsoft.ContainerRegistry/registries', parameters('acrName')), '')]"
+      "value": "[if(variables('createAcr'), resourceId('Microsoft.ContainerRegistry/registries', parameters('acrName')), if(variables('useExistingAcr'), extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', parameters('existingAcrSubscriptionId'), parameters('existingAcrResourceGroup')), 'Microsoft.ContainerRegistry/registries', parameters('existingAcrName')), ''))]"
     },
     "AZURE_AI_PROJECT_ACR_CONNECTION_NAME": {
       "type": "string",
-      "value": "[if(parameters('includeAcr'), format('{0}-conn', parameters('acrName')), '')]"
+      "value": "[if(variables('configureAcr'), format('{0}-conn', if(variables('createAcr'), parameters('acrName'), parameters('existingAcrName'))), parameters('existingAcrConnectionName'))]"
     },
     "AZURE_AI_PROJECT_CONNECTION_NAMES": {
       "type": "string",

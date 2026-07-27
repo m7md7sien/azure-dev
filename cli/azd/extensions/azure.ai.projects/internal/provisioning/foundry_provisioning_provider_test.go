@@ -899,6 +899,22 @@ func TestEnvValues_IncludesCanonicalKeysEvenWithoutAzdClient(t *testing.T) {
 	assert.Equal(t, "pid", got[envKeyPrincipalID])
 }
 
+func TestEnvValues_DoesNotMaskAzdValuesWithEmptyCanonicalValues(t *testing.T) {
+	t.Parallel()
+	p := &FoundryProvisioningProvider{
+		envName: "dev",
+		azdClient: newKVEnvClient(t, map[string]string{
+			envKeySubscriptionID: "sub-from-env",
+			envKeyLocation:       "westus2",
+		}),
+	}
+
+	got := p.envValues(t.Context())
+
+	assert.Equal(t, "sub-from-env", got[envKeySubscriptionID])
+	assert.Equal(t, "westus2", got[envKeyLocation])
+}
+
 func TestCollectPurgeableAccounts(t *testing.T) {
 	// Pure helper -- maps the SDK's pointer-heavy Account model down to the
 	// {name, location} pairs the purge step needs, skipping anything with a

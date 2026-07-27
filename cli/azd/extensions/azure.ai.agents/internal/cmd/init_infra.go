@@ -114,16 +114,6 @@ func ejectInfra(projectRoot, provider string) error {
 			"fix the project service configuration in azure.yaml",
 		)
 	}
-	if endpoint != "" {
-		return exterrors.Validation(
-			exterrors.CodeInfraEjectBrownfieldUnsupported,
-			"`azd ai agent init --infra` is not supported for a project that reuses an existing "+
-				"Foundry resource (the azure.ai.project service sets endpoint:)",
-			"remove --infra: the extension provisions the existing project (and any required "+
-				"container registry) directly with `azd provision`",
-		)
-	}
-
 	infraDir := filepath.Join(projectRoot, "infra")
 	if _, err := os.Stat(infraDir); err == nil {
 		return exterrors.Validation(
@@ -133,6 +123,14 @@ func ejectInfra(projectRoot, provider string) error {
 		)
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("stat infra directory: %w", err)
+	}
+	if endpoint != "" && provider == project.TerraformProviderName {
+		return exterrors.Validation(
+			exterrors.CodeInfraEjectBrownfieldUnsupported,
+			"Terraform infrastructure ejection is not supported for a project that reuses an existing "+
+				"Foundry resource (the azure.ai.project service sets endpoint:)",
+			"eject Bicep instead with `azd ai agent init --infra` or `--infra=bicep`",
+		)
 	}
 
 	res, err := synthesis.Synthesize(synthesis.Input{
@@ -175,7 +173,9 @@ func ejectInfra(projectRoot, provider string) error {
 	// by the "./infra/ already exists" refuse above and the command stays
 	// retryable without manual cleanup.
 	var ejectErr error
-	if provider == project.TerraformProviderName {
+	if res.Mode == synthesis.ModeBrownfield {
+		ejectErr = ejectBrownfieldBicep(infraDir, res)
+	} else if provider == project.TerraformProviderName {
 		ejectErr = ejectTerraform(projectRoot, infraDir, res.Parameters())
 	} else {
 		ejectErr = ejectBicep(infraDir, res.Parameters())
@@ -184,6 +184,29 @@ func ejectInfra(projectRoot, provider string) error {
 		_ = os.RemoveAll(infraDir)
 	}
 	return ejectErr
+}
+
+func ejectBrownfieldBicep(infraDir string, res *synthesis.Result) error {
+	written, err := writeBrownfieldTemplates(infraDir)
+	if err != nil {
+		return err
+	}
+
+	paramsArtifact, err := writeParametersFile(infraDir, map[string]any{
+		"deployments":           res.Deployments,
+		"connections":           res.Connections,
+		"connectionCredentials": res.ConnectionCredentials,
+	})
+	if err != nil {
+		return err
+	}
+	written = append(written, paramsArtifact)
+	slices.SortFunc(written, func(a, b ejectArtifact) int {
+		return strings.Compare(a.relPath, b.relPath)
+	})
+
+	printEjectSummary(written, project.BicepProviderName)
+	return nil
 }
 
 // ejectBicep writes the embedded Bicep tree plus the synthesized
@@ -343,14 +366,11 @@ func findFoundryServiceForEject(raw []byte) (string, error) {
 // templates/ root into infraDir, preserving the relative tree, and returns the
 // files written (with sizes). On any error it removes the partial infraDir.
 //
-// Three files are skipped:
+// Three files are skipped from the greenfield tree:
 //   - main.arm.json (the pre-compiled ARM JSON): would be stale once the user
 //     edits main.bicep.
-//   - brownfield.bicep and brownfield.arm.json: unreachable in a greenfield
-//     eject. ejectInfra already refuses to eject a brownfield (endpoint:)
-//     project, main.bicep never references brownfield.bicep, and the
-//     provider's brownfield path always loads the embedded
-//     synthesis.BrownfieldARMTemplate() instead of anything under infra/.
+//   - brownfield.bicep and brownfield.arm.json: the dedicated brownfield writer
+//     emits brownfield.bicep as main.bicep and never emits compiled ARM JSON.
 func writeEmbeddedTemplates(infraDir string) (_ []ejectArtifact, retErr error) {
 	//nolint:gosec // G301: ejected infra/ directory must be readable/traversable by IDEs, Git, and CI
 	if err := os.MkdirAll(infraDir, 0o755); err != nil {
@@ -421,13 +441,56 @@ func writeEmbeddedTemplates(infraDir string) (_ []ejectArtifact, retErr error) {
 	return artifacts, nil
 }
 
+func writeBrownfieldTemplates(infraDir string) (_ []ejectArtifact, retErr error) {
+	//nolint:gosec // G301: ejected infra/ directory must be readable/traversable by IDEs, Git, and CI
+	if err := os.MkdirAll(filepath.Join(infraDir, "modules"), 0o755); err != nil {
+		return nil, exterrors.Internal(
+			exterrors.CodeInfraEjectWriteFailed,
+			fmt.Sprintf("create brownfield infra directory: %s", err),
+		)
+	}
+	defer func() {
+		if retErr != nil {
+			_ = os.RemoveAll(infraDir)
+		}
+	}()
+
+	tfs := synthesis.TemplatesFS()
+	files := []struct {
+		src string
+		dst string
+	}{
+		{src: "templates/brownfield.bicep", dst: "main.bicep"},
+		{src: "templates/modules/acr-pull-role-assignment.bicep", dst: "modules/acr-pull-role-assignment.bicep"},
+	}
+	artifacts := make([]ejectArtifact, 0, len(files))
+	for _, file := range files {
+		data, err := fs.ReadFile(tfs, file.src)
+		if err != nil {
+			return nil, exterrors.Internal(
+				exterrors.CodeInfraEjectWriteFailed,
+				fmt.Sprintf("read brownfield template %s: %s", file.src, err),
+			)
+		}
+		dst := filepath.Join(infraDir, filepath.FromSlash(file.dst))
+		//nolint:gosec // G306: ejected Bicep sources are intended to be human-readable
+		if err := os.WriteFile(dst, data, 0o644); err != nil {
+			return nil, exterrors.Internal(
+				exterrors.CodeInfraEjectWriteFailed,
+				fmt.Sprintf("write brownfield template %s: %s", file.dst, err),
+			)
+		}
+		artifacts = append(artifacts, ejectArtifact{
+			relPath: filepath.ToSlash(filepath.Join("infra", file.dst)),
+			bytes:   len(data),
+		})
+	}
+	return artifacts, nil
+}
+
 // writeParametersFile emits infra/main.parameters.json in the standard ARM
-// parameter file shape. Only synthesizer-known values (`deployments`,
-// `includeAcr`) are written; deploy-time parameters (foundryProjectName,
-// location, resourceGroupName, principalId, resourceTokenSalt, tags) are
-// supplied by the provider at `azd provision`. The result is a partial
-// parameters file -- enough for `bicep build` to validate, not for a
-// standalone `az deployment sub create`.
+// parameter file shape. Callers pass only synthesizer-owned values; targeting,
+// location, identity, and tags remain provider-owned at provision time.
 func writeParametersFile(infraDir string, params map[string]any) (ejectArtifact, error) {
 	type paramValue struct {
 		Value any `json:"value"`

@@ -685,8 +685,13 @@ func (p *FoundryProvisioningProvider) deployBrownfield(
 	createACR := p.brownfieldACRRequested(ctx)
 	deployments := p.brownfieldDeployments()
 	connections := p.synthResult.Connections
+	hasOnDiskTemplate := p.onDiskTemplatePresent()
+	configureExistingACR, err := p.brownfieldExistingACRNeedsConfiguration(ctx)
+	if err != nil {
+		return nil, err
+	}
 
-	if len(deployments) == 0 && !createACR && len(connections) == 0 {
+	if len(deployments) == 0 && !createACR && !configureExistingACR && len(connections) == 0 && !hasOnDiskTemplate {
 		progress("Using existing Foundry project (endpoint set); skipping provisioning")
 		// Best-effort tenant lookup so AZURE_TENANT_ID is still surfaced for the
 		// existing-project path (no resources are provisioned here). Log on
@@ -711,23 +716,20 @@ func (p *FoundryProvisioningProvider) deployBrownfield(
 		return nil, err
 	}
 
-	tmpl, err := brownfieldARMTemplate()
-	if err != nil {
-		return nil, err
-	}
-	params, err := p.brownfieldParams(ctx, account, rg, createACR)
+	src, err := p.resolveBrownfieldTemplate(ctx, progress, account, rg, createACR)
 	if err != nil {
 		return nil, err
 	}
 
 	dep := armresources.Deployment{
 		Properties: &armresources.DeploymentProperties{
-			Template:   tmpl,
-			Parameters: params,
+			Template:   src.armTemplate,
+			Parameters: src.parameters,
 			Mode:       new(armresources.DeploymentModeIncremental),
 		},
 		Tags: map[string]*string{
-			"azd-env-name": new(p.envName),
+			"azd-env-name":                  new(p.envName),
+			"azd-provision-template-source": new(src.mode.String()),
 		},
 	}
 
@@ -762,7 +764,8 @@ func (p *FoundryProvisioningProvider) deployBrownfield(
 
 	return &azdext.ProvisioningDeployResult{
 		Deployment: &azdext.ProvisioningDeployment{
-			Outputs: p.withTenantOutput(outputs),
+			Parameters: armInputsToProto(src.parameters),
+			Outputs:    p.withTenantOutput(outputs),
 		},
 	}, nil
 }
@@ -805,6 +808,7 @@ func (p *FoundryProvisioningProvider) brownfieldParams(
 	}
 	if createACR {
 		params["includeAcr"] = map[string]any{"value": true}
+		params["acrMode"] = map[string]any{"value": "create"}
 		params["acrName"] = map[string]any{"value": p.brownfieldACRName(account)}
 		params["tags"] = map[string]any{"value": map[string]string{"azd-env-name": p.envName}}
 		// Only set location when resolved; an empty value would override the
@@ -812,8 +816,67 @@ func (p *FoundryProvisioningProvider) brownfieldParams(
 		if loc := p.brownfieldLocation(ctx, rg); loc != "" {
 			params["location"] = map[string]any{"value": loc}
 		}
+	} else if existing, err := p.brownfieldExistingACR(ctx); err != nil {
+		return nil, err
+	} else if existing != nil {
+		params["acrMode"] = map[string]any{"value": "existing"}
+		params["existingAcrSubscriptionId"] = map[string]any{"value": existing.subscriptionID}
+		params["existingAcrResourceGroup"] = map[string]any{"value": existing.resourceGroup}
+		params["existingAcrName"] = map[string]any{"value": existing.name}
+		params["existingAcrEndpoint"] = map[string]any{"value": existing.endpoint}
+		params["existingAcrConnectionName"] = map[string]any{"value": existing.connectionName}
 	}
 	return params, nil
+}
+
+type existingACR struct {
+	subscriptionID string
+	resourceGroup  string
+	name           string
+	endpoint       string
+	connectionName string
+}
+
+func (p *FoundryProvisioningProvider) brownfieldExistingACR(ctx context.Context) (*existingACR, error) {
+	if p.azdClient == nil {
+		return nil, nil
+	}
+	resourceID, _ := p.envValue(ctx, "AZURE_CONTAINER_REGISTRY_RESOURCE_ID")
+	endpoint, _ := p.envValue(ctx, "AZURE_CONTAINER_REGISTRY_ENDPOINT")
+	if resourceID == "" && endpoint == "" {
+		return nil, nil
+	}
+	if resourceID == "" {
+		return nil, exterrors.Dependency(
+			exterrors.CodeInvalidServiceConfig,
+			"AZURE_CONTAINER_REGISTRY_RESOURCE_ID is required when reusing an existing container registry",
+			"re-run `azd ai agent init` to select the registry, or set its full ARM resource ID",
+		)
+	}
+	resID, err := arm.ParseResourceID(resourceID)
+	if err != nil || resID.SubscriptionID == "" || resID.ResourceGroupName == "" || resID.Name == "" {
+		return nil, exterrors.Validation(
+			exterrors.CodeInvalidServiceConfig,
+			fmt.Sprintf("parse AZURE_CONTAINER_REGISTRY_RESOURCE_ID %q as an ACR resource ID", resourceID),
+			"verify it is a full Microsoft.ContainerRegistry/registries ARM resource ID",
+		)
+	}
+	connectionName, _ := p.envValue(ctx, "AZURE_AI_PROJECT_ACR_CONNECTION_NAME")
+	return &existingACR{
+		subscriptionID: resID.SubscriptionID,
+		resourceGroup:  resID.ResourceGroupName,
+		name:           resID.Name,
+		endpoint:       endpoint,
+		connectionName: connectionName,
+	}, nil
+}
+
+func (p *FoundryProvisioningProvider) brownfieldExistingACRNeedsConfiguration(ctx context.Context) (bool, error) {
+	existing, err := p.brownfieldExistingACR(ctx)
+	if err != nil {
+		return false, err
+	}
+	return existing != nil && existing.connectionName == "", nil
 }
 
 // previewBrownfield runs a resource-group-scoped what-if on brownfield.arm.json
@@ -825,7 +888,13 @@ func (p *FoundryProvisioningProvider) previewBrownfield(
 	progress grpcbroker.ProgressFunc,
 ) (*azdext.ProvisioningPreviewResult, error) {
 	createACR := p.brownfieldACRRequested(ctx)
-	if len(p.brownfieldDeployments()) == 0 && !createACR && len(p.synthResult.Connections) == 0 {
+	configureExistingACR, err := p.brownfieldExistingACRNeedsConfiguration(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(p.brownfieldDeployments()) == 0 && !createACR && !configureExistingACR &&
+		len(p.synthResult.Connections) == 0 &&
+		!p.onDiskTemplatePresent() {
 		progress("Using existing Foundry project (endpoint set); nothing to provision")
 		return &azdext.ProvisioningPreviewResult{
 			Preview: &azdext.ProvisioningDeploymentPreview{},
@@ -838,11 +907,7 @@ func (p *FoundryProvisioningProvider) previewBrownfield(
 	if err != nil {
 		return nil, err
 	}
-	tmpl, err := brownfieldARMTemplate()
-	if err != nil {
-		return nil, err
-	}
-	params, err := p.brownfieldParams(ctx, account, rg, createACR)
+	src, err := p.resolveBrownfieldTemplate(ctx, progress, account, rg, createACR)
 	if err != nil {
 		return nil, err
 	}
@@ -854,8 +919,8 @@ func (p *FoundryProvisioningProvider) previewBrownfield(
 
 	whatIf := armresources.DeploymentWhatIf{
 		Properties: &armresources.DeploymentWhatIfProperties{
-			Template:   tmpl,
-			Parameters: params,
+			Template:   src.armTemplate,
+			Parameters: src.parameters,
 			Mode:       new(armresources.DeploymentModeIncremental),
 		},
 	}
@@ -1010,6 +1075,54 @@ func brownfieldARMTemplate() (map[string]any, error) {
 	return tmpl, nil
 }
 
+func (p *FoundryProvisioningProvider) resolveBrownfieldTemplate(
+	ctx context.Context,
+	progress grpcbroker.ProgressFunc,
+	account string,
+	rg string,
+	createACR bool,
+) (*templateSource, error) {
+	hostParams, err := p.brownfieldParams(ctx, account, rg, createACR)
+	if err != nil {
+		return nil, err
+	}
+
+	if p.onDiskSource == nil && p.onDiskTemplatePresent() {
+		progress("Compiling on-disk brownfield Bicep templates...")
+		src, err := loadOnDiskTemplate(ctx, p.projectPath, p.bicepCli(), p.envValues(ctx))
+		if err != nil {
+			return nil, err
+		}
+		if src == nil {
+			return nil, exterrors.Validation(
+				exterrors.CodeOnDiskTemplateMissing,
+				"on-disk brownfield Bicep template disappeared while it was being loaded",
+				"restore infra/main.bicep (or main.bicepparam) and re-run `azd provision`",
+			)
+		}
+		p.onDiskSource = src
+	}
+
+	if p.onDiskSource != nil {
+		return &templateSource{
+			mode:        p.onDiskSource.mode,
+			armTemplate: p.onDiskSource.armTemplate,
+			parameters:  mergeParameters(p.onDiskSource.parameters, hostParams),
+			sourcePath:  p.onDiskSource.sourcePath,
+		}, nil
+	}
+
+	tmpl, err := brownfieldARMTemplate()
+	if err != nil {
+		return nil, err
+	}
+	return &templateSource{
+		mode:        templateModeEmbedded,
+		armTemplate: tmpl,
+		parameters:  hostParams,
+	}, nil
+}
+
 // resolveTemplate returns the on-disk Bicep source if present, else the
 // embedded ARM JSON. Lazy: compiles on-disk Bicep on first call and caches
 // the result on the provider so re-runs skip the bicep CLI.
@@ -1095,12 +1208,18 @@ func (p *FoundryProvisioningProvider) bicepCli() bicepCompiler {
 // canonical names so a user's ${AZURE_LOCATION} reference works even before
 // their azd env file persists them.
 func (p *FoundryProvisioningProvider) envValues(ctx context.Context) map[string]string {
-	out := map[string]string{
+	out := map[string]string{}
+	canonical := map[string]string{
 		envKeySubscriptionID: p.subID,
 		envKeyLocation:       p.location,
 		envKeyResourceGroup:  p.rgName,
 		envKeyProjectName:    p.foundryName,
 		envKeyPrincipalID:    p.principalID,
+	}
+	for key, value := range canonical {
+		if value != "" {
+			out[key] = value
+		}
 	}
 	// Also surface the broader azd env. Best-effort: fall back to the
 	// canonical values above if the env service is unavailable.

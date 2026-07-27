@@ -6,17 +6,39 @@ package cmd
 import (
 	"encoding/json"
 	"errors"
+	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"azureaiagent/internal/exterrors"
+	"azureaiagent/internal/synthesis"
 
 	"github.com/azure/azure-dev/cli/azd/pkg/azdext"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.yaml.in/yaml/v3"
 )
+
+type parametersDocument struct {
+	Schema         string `json:"$schema"`
+	ContentVersion string `json:"contentVersion"`
+	Parameters     map[string]struct {
+		Value any `json:"value"`
+	} `json:"parameters"`
+}
+
+func readParametersDocument(t *testing.T, path string) parametersDocument {
+	t.Helper()
+	//nolint:gosec // test path is rooted under t.TempDir
+	raw, err := os.ReadFile(path)
+	require.NoError(t, err)
+	var doc parametersDocument
+	require.NoError(t, json.Unmarshal(raw, &doc))
+	return doc
+}
 
 // validFoundryAzureYAML returns an azure.yaml payload exercising the
 // synthesizer's two derived parameters: deployments and includeAcr.
@@ -149,27 +171,64 @@ services:
 	assert.Contains(t, localErr.Message, "[agent-a agent-b]")
 }
 
-func TestEjectInfra_RefusesWhenBrownfieldEndpoint(t *testing.T) {
-	t.Parallel()
+func TestEjectInfra_BrownfieldWritesMinimalBicepTree(t *testing.T) {
 	dir := t.TempDir()
-	mustWriteFile(t, filepath.Join(dir, "azure.yaml"), `name: my-project
+	const azureYAML = `name: my-project
 services:
   ai-project:
     host: azure.ai.project
     endpoint: https://acct.services.ai.azure.com/api/projects/p1
-`)
+    deployments:
+      - name: gpt-4o-mini-e2e
+        model: {name: gpt-4o-mini, format: OpenAI, version: "2024-07-18"}
+        sku: {name: GlobalStandard, capacity: 1}
+  test-connection:
+    host: azure.ai.connection
+    category: RemoteTool
+    target: ${MCP_ENDPOINT}
+    authType: CustomKeys
+    credentials:
+      key: ${MCP_KEY}
+`
+	mustWriteFile(t, filepath.Join(dir, "azure.yaml"), azureYAML)
 
-	err := ejectInfra(dir, "bicep")
-	require.Error(t, err)
+	withCapturedStdout(t, func() {
+		require.NoError(t, ejectInfra(dir, "bicep"))
+	})
 
-	localErr, ok := errors.AsType[*azdext.LocalError](err)
-	require.True(t, ok)
-	assert.Equal(t, exterrors.CodeInfraEjectBrownfieldUnsupported, localErr.Code)
-	assert.Contains(t, localErr.Message, "endpoint:")
+	expected := []string{
+		filepath.Join("infra", "main.bicep"),
+		filepath.Join("infra", "main.parameters.json"),
+		filepath.Join("infra", "modules", "acr-pull-role-assignment.bicep"),
+	}
+	for _, rel := range expected {
+		_, err := os.Stat(filepath.Join(dir, rel))
+		require.NoError(t, err, "expected %s", rel)
+	}
+
+	mainBicep, err := os.ReadFile(filepath.Join(dir, "infra", "main.bicep")) //nolint:gosec
+	require.NoError(t, err)
+	embedded, err := fs.ReadFile(synthesis.TemplatesFS(), "templates/brownfield.bicep")
+	require.NoError(t, err)
+	assert.Equal(t, embedded, mainBicep)
+
+	entries, err := os.ReadDir(filepath.Join(dir, "infra"))
+	require.NoError(t, err)
+	require.Len(t, entries, 3)
+
+	params := readParametersDocument(t, filepath.Join(dir, "infra", "main.parameters.json"))
+	assert.ElementsMatch(t, []string{"deployments", "connections", "connectionCredentials"},
+		slices.Collect(maps.Keys(params.Parameters)))
+	assert.Equal(t, "${MCP_ENDPOINT}", params.Parameters["connections"].Value.([]any)[0].(map[string]any)["target"])
+	credentials := params.Parameters["connectionCredentials"].Value.(map[string]any)
+	assert.Equal(t, "${MCP_KEY}", credentials["test-connection"].(map[string]any)["key"])
+
+	gotYAML, err := os.ReadFile(filepath.Join(dir, "azure.yaml")) //nolint:gosec
+	require.NoError(t, err)
+	assert.Equal(t, azureYAML, string(gotYAML))
 }
 
-func TestEjectInfra_BrownfieldRefusalPrecedesSiblingRefValidation(t *testing.T) {
-	t.Parallel()
+func TestEjectInfra_BrownfieldSkipsAgentRefValidation(t *testing.T) {
 	dir := t.TempDir()
 	mustWriteFile(t, filepath.Join(dir, "azure.yaml"), `name: my-project
 services:
@@ -179,16 +238,29 @@ services:
   agent:
     host: azure.ai.agent
     $ref: ./missing-agent.yaml
-  connection:
-    host: azure.ai.connection
-    $ref: ./missing-connection.yaml
 `)
 
-	err := ejectInfra(dir, "bicep")
+	withCapturedStdout(t, func() {
+		require.NoError(t, ejectInfra(dir, "bicep"))
+	})
+}
+
+func TestEjectInfra_BrownfieldTerraformUnsupported(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	mustWriteFile(t, filepath.Join(dir, "azure.yaml"), `name: my-project
+services:
+  ai-project:
+    host: azure.ai.project
+    endpoint: https://acct.services.ai.azure.com/api/projects/p1
+`)
+
+	err := ejectInfra(dir, "terraform")
 	require.Error(t, err)
 	localErr, ok := errors.AsType[*azdext.LocalError](err)
 	require.True(t, ok)
 	assert.Equal(t, exterrors.CodeInfraEjectBrownfieldUnsupported, localErr.Code)
+	assert.Contains(t, localErr.Message, "Terraform")
 }
 
 func TestEjectInfra_HappyPath_WritesExpectedFiles(t *testing.T) {
@@ -229,8 +301,7 @@ func TestEjectInfra_HappyPath_WritesExpectedFiles(t *testing.T) {
 		"main.arm.json should be excluded from the ejected tree (it would be stale "+
 			"the moment the user edits main.bicep)")
 
-	// brownfield.bicep/brownfield.arm.json are excluded too: unreachable in a
-	// greenfield eject (see TestEjectInfra_RefusesWhenBrownfieldEndpoint).
+	// Brownfield templates are excluded from a greenfield eject.
 	for _, rel := range []string{
 		filepath.Join("infra", "brownfield.bicep"),
 		filepath.Join("infra", "brownfield.arm.json"),

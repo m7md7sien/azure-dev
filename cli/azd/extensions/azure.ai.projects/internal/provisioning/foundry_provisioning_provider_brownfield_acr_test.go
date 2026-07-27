@@ -6,12 +6,15 @@ package provisioning
 import (
 	"context"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"azure.ai.projects/internal/synthesis"
 
 	"github.com/azure/azure-dev/cli/azd/pkg/azdext"
+	"github.com/azure/azure-dev/cli/azd/pkg/tools/bicep"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
@@ -49,6 +52,16 @@ func (s *kvEnvServer) GetValue(
 	_ context.Context, req *azdext.GetEnvRequest,
 ) (*azdext.KeyValueResponse, error) {
 	return &azdext.KeyValueResponse{Value: s.values[req.Key]}, nil
+}
+
+func (s *kvEnvServer) GetValues(
+	_ context.Context, _ *azdext.GetEnvironmentRequest,
+) (*azdext.KeyValueListResponse, error) {
+	values := make([]*azdext.KeyValue, 0, len(s.values))
+	for key, value := range s.values {
+		values = append(values, &azdext.KeyValue{Key: key, Value: value})
+	}
+	return &azdext.KeyValueListResponse{KeyValues: values}, nil
 }
 
 func newKVEnvClient(t *testing.T, values map[string]string) *azdext.AzdClient {
@@ -120,6 +133,28 @@ func TestBrownfieldACRRequested(t *testing.T) {
 			assert.Equal(t, tt.want, p.brownfieldACRRequested(t.Context()))
 		})
 	}
+}
+
+func TestBrownfieldExistingACRNeedsConfiguration(t *testing.T) {
+	t.Parallel()
+	resourceID := "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.ContainerRegistry/registries/acr"
+
+	needs := &FoundryProvisioningProvider{envName: "dev", azdClient: newKVEnvClient(t, map[string]string{
+		"AZURE_CONTAINER_REGISTRY_RESOURCE_ID": resourceID,
+		"AZURE_CONTAINER_REGISTRY_ENDPOINT":    "acr.azurecr.io",
+	})}
+	got, err := needs.brownfieldExistingACRNeedsConfiguration(t.Context())
+	require.NoError(t, err)
+	assert.True(t, got)
+
+	configured := &FoundryProvisioningProvider{envName: "dev", azdClient: newKVEnvClient(t, map[string]string{
+		"AZURE_CONTAINER_REGISTRY_RESOURCE_ID": resourceID,
+		"AZURE_CONTAINER_REGISTRY_ENDPOINT":    "acr.azurecr.io",
+		"AZURE_AI_PROJECT_ACR_CONNECTION_NAME": "acr-conn",
+	})}
+	got, err = configured.brownfieldExistingACRNeedsConfiguration(t.Context())
+	require.NoError(t, err)
+	assert.False(t, got)
 }
 
 func TestBrownfieldACRName(t *testing.T) {
@@ -292,6 +327,96 @@ func TestBrownfieldParams(t *testing.T) {
 
 		assert.Contains(t, params, "includeAcr")
 		assert.NotContains(t, params, "location")
+	})
+
+	t.Run("existing ACR is referenced and existing connection preserved", func(t *testing.T) {
+		t.Parallel()
+		p := &FoundryProvisioningProvider{
+			envName: "dev",
+			synthResult: brownfieldResult(
+				"https://acct.services.ai.azure.com/api/projects/my-project", nil, nil),
+			azdClient: newKVEnvClient(t, map[string]string{
+				"AZURE_CONTAINER_REGISTRY_RESOURCE_ID": "/subscriptions/sub/resourceGroups/acr-rg/providers/Microsoft.ContainerRegistry/registries/existingacr",
+				"AZURE_CONTAINER_REGISTRY_ENDPOINT":    "existingacr.azurecr.io",
+				"AZURE_AI_PROJECT_ACR_CONNECTION_NAME": "existing-conn",
+			}),
+		}
+		params, err := p.brownfieldParams(t.Context(), "acct", "rg", false)
+		require.NoError(t, err)
+
+		assert.Equal(t, map[string]any{"value": "existing"}, params["acrMode"])
+		assert.Equal(t, map[string]any{"value": "sub"}, params["existingAcrSubscriptionId"])
+		assert.Equal(t, map[string]any{"value": "acr-rg"}, params["existingAcrResourceGroup"])
+		assert.Equal(t, map[string]any{"value": "existingacr"}, params["existingAcrName"])
+		assert.Equal(t, map[string]any{"value": "existing-conn"}, params["existingAcrConnectionName"])
+		assert.NotContains(t, params, "includeAcr")
+	})
+
+	t.Run("existing ACR without connection requests connection setup", func(t *testing.T) {
+		t.Parallel()
+		p := &FoundryProvisioningProvider{
+			envName: "dev",
+			synthResult: brownfieldResult(
+				"https://acct.services.ai.azure.com/api/projects/my-project", nil, nil),
+			azdClient: newKVEnvClient(t, map[string]string{
+				"AZURE_CONTAINER_REGISTRY_RESOURCE_ID": "/subscriptions/sub/resourceGroups/acr-rg/providers/Microsoft.ContainerRegistry/registries/existingacr",
+				"AZURE_CONTAINER_REGISTRY_ENDPOINT":    "existingacr.azurecr.io",
+			}),
+		}
+		params, err := p.brownfieldParams(t.Context(), "acct", "rg", false)
+		require.NoError(t, err)
+		assert.Equal(t, map[string]any{"value": ""}, params["existingAcrConnectionName"])
+	})
+}
+
+func TestResolveBrownfieldTemplate(t *testing.T) {
+	t.Run("embedded fallback", func(t *testing.T) {
+		p := &FoundryProvisioningProvider{
+			envName: "dev",
+			synthResult: brownfieldResult(
+				"https://acct.services.ai.azure.com/api/projects/my-project", nil, nil),
+		}
+		src, err := p.resolveBrownfieldTemplate(t.Context(), func(string) {}, "acct", "rg", false)
+		require.NoError(t, err)
+		assert.Equal(t, templateModeEmbedded, src.mode)
+		assert.Equal(t, map[string]any{"value": "acct"}, src.parameters["accountName"])
+	})
+
+	t.Run("on-disk template and user parameter precedence", func(t *testing.T) {
+		dir := t.TempDir()
+		infraDir := filepath.Join(dir, onDiskInfraDir)
+		require.NoError(t, os.MkdirAll(infraDir, 0o750))
+		require.NoError(t, os.WriteFile(
+			filepath.Join(infraDir, onDiskBicepFile), []byte("targetScope = 'resourceGroup'"), 0o600))
+		require.NoError(t, os.WriteFile(
+			filepath.Join(infraDir, onDiskParamsFile),
+			[]byte(minimalARMParametersFile(t, map[string]any{
+				"accountName": "user-account",
+				"deployments": []any{"user-deployment"},
+			})),
+			0o600,
+		))
+		stub := &stubCompiler{buildResult: bicep.BuildResult{Compiled: minimalARMTemplate()}}
+		p := &FoundryProvisioningProvider{
+			projectPath:      dir,
+			envName:          "dev",
+			bicepCliInstance: stub,
+			synthResult: brownfieldResult(
+				"https://acct.services.ai.azure.com/api/projects/my-project",
+				[]synthesis.Deployment{{Name: "manifest-deployment"}}, nil),
+		}
+
+		src, err := p.resolveBrownfieldTemplate(t.Context(), func(string) {}, "acct", "rg", false)
+		require.NoError(t, err)
+		assert.Equal(t, templateModeBicep, src.mode)
+		assert.Equal(t, map[string]any{"value": "user-account"}, src.parameters["accountName"])
+		assert.Equal(t, map[string]any{"value": []any{"user-deployment"}}, src.parameters["deployments"])
+		assert.Equal(t, map[string]any{"value": "my-project"}, src.parameters["projectName"])
+		require.Len(t, stub.buildCalls, 1)
+
+		_, err = p.resolveBrownfieldTemplate(t.Context(), func(string) {}, "acct", "rg", false)
+		require.NoError(t, err)
+		require.Len(t, stub.buildCalls, 1, "compiled source should be cached")
 	})
 }
 

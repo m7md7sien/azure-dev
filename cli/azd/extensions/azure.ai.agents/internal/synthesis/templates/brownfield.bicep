@@ -62,6 +62,29 @@ param includeAcr bool = false
 @description('Container registry name. 5-50 alphanumeric chars. Required when includeAcr is true.')
 param acrName string = ''
 
+@allowed([
+  'none'
+  'create'
+  'existing'
+])
+@description('ACR ownership mode. Existing registries are referenced, never created.')
+param acrMode string = includeAcr ? 'create' : 'none'
+
+@description('Subscription containing an existing ACR.')
+param existingAcrSubscriptionId string = ''
+
+@description('Resource group containing an existing ACR.')
+param existingAcrResourceGroup string = ''
+
+@description('Name of an existing ACR.')
+param existingAcrName string = ''
+
+@description('Login server of an existing ACR.')
+param existingAcrEndpoint string = ''
+
+@description('Existing Foundry ACR connection name. Empty creates the missing RBAC and connection.')
+param existingAcrConnectionName string = ''
+
 @description('Foundry project connections to create on the existing project (host: azure.ai.connection services).')
 param connections connectionsType = []
 
@@ -104,7 +127,11 @@ resource foundryAccountPreview 'Microsoft.CognitiveServices/accounts@2025-04-01-
 
 // Container registry for the hosted container agent. Premium SKU mirrors the
 // greenfield acr.bicep.
-resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' = if (includeAcr) {
+var createAcr = acrMode == 'create'
+var useExistingAcr = acrMode == 'existing'
+var configureAcr = createAcr || (useExistingAcr && empty(existingAcrConnectionName))
+
+resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' = if (createAcr) {
   name: acrName
   location: location
   tags: tags
@@ -121,6 +148,11 @@ resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' = if (incl
   }
 }
 
+resource existingRegistry 'Microsoft.ContainerRegistry/registries@2023-07-01' existing = if (useExistingAcr) {
+  name: existingAcrName
+  scope: resourceGroup(existingAcrSubscriptionId, existingAcrResourceGroup)
+}
+
 // Built-in AcrPull role. See: https://learn.microsoft.com/azure/role-based-access-control/built-in-roles
 var acrPullRoleId = subscriptionResourceId(
   'Microsoft.Authorization/roleDefinitions',
@@ -129,10 +161,20 @@ var acrPullRoleId = subscriptionResourceId(
 
 // The nested module makes the runtime project principal a deployment
 // parameter. The assignment name can then include that principal.
-module foundryAcrPull 'modules/acr-pull-role-assignment.bicep' = if (includeAcr) {
-  name: 'foundry-acr-pull'
+module foundryAcrPullNew 'modules/acr-pull-role-assignment.bicep' = if (createAcr) {
+  name: 'foundry-acr-pull-new'
   params: {
-    registryName: registry.name
+    registryName: registry!.name
+    principalId: foundryAccountPreview::project.identity.principalId
+    roleDefinitionId: acrPullRoleId
+  }
+}
+
+module foundryAcrPullExisting 'modules/acr-pull-role-assignment.bicep' = if (useExistingAcr && empty(existingAcrConnectionName)) {
+  name: 'foundry-acr-pull-existing'
+  scope: resourceGroup(existingAcrSubscriptionId, existingAcrResourceGroup)
+  params: {
+    registryName: existingAcrName
     principalId: foundryAccountPreview::project.identity.principalId
     roleDefinitionId: acrPullRoleId
   }
@@ -140,23 +182,24 @@ module foundryAcrPull 'modules/acr-pull-role-assignment.bicep' = if (includeAcr)
 
 // Project-scoped ContainerRegistry connection so Foundry can resolve the registry
 // by name when running the hosted agent.
-resource acrConnection 'Microsoft.CognitiveServices/accounts/projects/connections@2025-04-01-preview' = if (includeAcr) {
-  name: '${accountName}/${projectName}/${acrName}-conn'
+resource acrConnection 'Microsoft.CognitiveServices/accounts/projects/connections@2025-04-01-preview' = if (configureAcr) {
+  name: '${accountName}/${projectName}/${createAcr ? acrName : existingAcrName}-conn'
   properties: {
     category: 'ContainerRegistry'
-    target: registry!.properties.loginServer
+    target: createAcr ? registry!.properties.loginServer : existingAcrEndpoint
     authType: 'ManagedIdentity'
     credentials: {
       clientId: foundryAccountPreview::project.identity.principalId
-      resourceId: registry!.id
+      resourceId: createAcr ? registry!.id : existingRegistry!.id
     }
     isSharedToAll: true
     metadata: {
-      ResourceId: registry!.id
+      ResourceId: createAcr ? registry!.id : existingRegistry!.id
     }
   }
   dependsOn: [
-    foundryAcrPull
+    foundryAcrPullNew
+    foundryAcrPullExisting
   ]
 }
 
@@ -184,7 +227,7 @@ resource projectConnections 'Microsoft.CognitiveServices/accounts/projects/conne
 
 // Outputs
 
-output AZURE_CONTAINER_REGISTRY_ENDPOINT string = includeAcr ? registry!.properties.loginServer : ''
-output AZURE_CONTAINER_REGISTRY_RESOURCE_ID string = includeAcr ? registry!.id : ''
-output AZURE_AI_PROJECT_ACR_CONNECTION_NAME string = includeAcr ? '${acrName}-conn' : ''
+output AZURE_CONTAINER_REGISTRY_ENDPOINT string = createAcr ? registry!.properties.loginServer : (useExistingAcr ? existingAcrEndpoint : '')
+output AZURE_CONTAINER_REGISTRY_RESOURCE_ID string = createAcr ? registry!.id : (useExistingAcr ? existingRegistry!.id : '')
+output AZURE_AI_PROJECT_ACR_CONNECTION_NAME string = configureAcr ? '${createAcr ? acrName : existingAcrName}-conn' : existingAcrConnectionName
 output AZURE_AI_PROJECT_CONNECTION_NAMES string = join(map(connections, c => c.name), ',')
