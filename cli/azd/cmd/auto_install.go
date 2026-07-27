@@ -476,10 +476,14 @@ type ExecuteResult struct {
 	LatestVersion <-chan *update.VersionInfo
 }
 
+// newRootCmdForExecution builds the root command, constructing it from --cwd when one was
+// supplied so that cached AzdContext and ProjectConfig state resolves against the requested
+// project rather than the caller's directory. Cobra's PersistentPreRunE performs the real
+// directory change during execution, so the caller's directory is restored before returning.
 func newRootCmdForExecution(
 	rootContainer *ioc.NestedContainer,
 	globalOpts *internal.GlobalCommandOptions,
-) (*cobra.Command, error) {
+) (cmd *cobra.Command, err error) {
 	if globalOpts.Cwd == "" {
 		return NewRootCmd(false, nil, rootContainer), nil
 	}
@@ -490,11 +494,11 @@ func newRootCmdForExecution(
 	}
 	globalOpts.Cwd = absoluteCwd
 
-	if _, err := os.Stat(absoluteCwd); os.IsNotExist(err) {
+	if _, statErr := os.Stat(absoluteCwd); os.IsNotExist(statErr) {
 		// PersistentPreRunE owns prompting for and creating a missing --cwd directory.
 		return NewRootCmd(false, nil, rootContainer), nil
-	} else if err != nil {
-		return nil, fmt.Errorf("checking cwd: %w", err)
+	} else if statErr != nil {
+		return nil, fmt.Errorf("checking cwd: %w", statErr)
 	}
 
 	previousCwd, err := os.Getwd()
@@ -504,12 +508,14 @@ func newRootCmdForExecution(
 	if err := os.Chdir(absoluteCwd); err != nil {
 		return nil, fmt.Errorf("changing directory to %s: %w", absoluteCwd, err)
 	}
+	defer func() {
+		// Deferred so the process never keeps the temporary directory after a failure.
+		if restoreErr := os.Chdir(previousCwd); restoreErr != nil && err == nil {
+			cmd, err = nil, fmt.Errorf("restoring current directory: %w", restoreErr)
+		}
+	}()
 
-	rootCmd := NewRootCmd(false, nil, rootContainer)
-	if err := os.Chdir(previousCwd); err != nil {
-		return nil, fmt.Errorf("restoring current directory: %w", err)
-	}
-	return rootCmd, nil
+	return NewRootCmd(false, nil, rootContainer), nil
 }
 
 // ExecuteWithAutoInstall executes the command and handles auto-installation of extensions for unknown commands.
@@ -548,8 +554,6 @@ func ExecuteWithAutoInstall(ctx context.Context, rootContainer *ioc.NestedContai
 	// This allows us to determine if a subcommand was provided or not or if the command is unknown.
 	foundCmd, originalArgs, err := rootCmd.Find(os.Args[1:])
 	if err == nil {
-		projectExtensionsHandled := false
-
 		// Detect lightspeed commands from the cobra annotation set by CobraBuilder.
 		result.IsLightspeed = foundCmd.Annotations[actions.AnnotationLightspeed] == "true"
 
@@ -562,8 +566,9 @@ func ExecuteWithAutoInstall(ctx context.Context, rootContainer *ioc.NestedContai
 			result.LatestVersion = startUpdateCheck(ctx)
 		}
 
-		handled, installed, err := tryAutoInstallProjectExtensions(ctx, rootContainer, foundCmd)
-		projectExtensionsHandled = handled
+		projectExtensionsHandled, installed, err := tryAutoInstallProjectExtensions(
+			ctx, rootContainer, foundCmd, originalArgs,
+		)
 		if err != nil {
 			if resolveErr := rootContainer.Resolve(&console); resolveErr != nil {
 				fmt.Fprintln(os.Stderr, output.WithErrorFormat("ERROR: %s", err.Error()))

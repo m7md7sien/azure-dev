@@ -6,6 +6,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -1621,4 +1622,222 @@ func Test_TryAutoInstall_HasSubcommand(t *testing.T) {
 	// The "deploy" command already exists as sub-command, so partial namespace shouldn't trigger
 	result := tryAutoInstallForPartialNamespace(t.Context(), container, root, []string{"deploy"})
 	assert.False(t, result)
+}
+
+func TestCommandWillRun(t *testing.T) {
+	t.Parallel()
+
+	newCommand := func() *cobra.Command {
+		cmd := &cobra.Command{Use: "deploy", Args: cobra.MaximumNArgs(1)}
+		// Mirrors the flags CobraBuilder registers for every azd command.
+		cmd.Flags().BoolP("help", "h", false, "Gets help for deploy.")
+		cmd.Flags().Bool("docs", false, "Opens the documentation for deploy.")
+		cmd.Flags().StringP("environment", "e", "", "The environment name.")
+		cmd.Flags().StringArray("docker-build-arg", nil, "Docker build arguments.")
+		return cmd
+	}
+
+	tests := []struct {
+		name    string
+		args    []string
+		willRun bool
+	}{
+		{name: "no args", args: nil, willRun: true},
+		{name: "valid flag", args: []string{"--environment", "dev"}, willRun: true},
+		{name: "valid positional arg", args: []string{"api"}, willRun: true},
+		{name: "help long", args: []string{"--help"}, willRun: false},
+		{name: "help short", args: []string{"-h"}, willRun: false},
+		{name: "help after args", args: []string{"api", "--help"}, willRun: false},
+		{name: "docs", args: []string{"--docs"}, willRun: false},
+		{name: "docs disabled", args: []string{"--docs=false"}, willRun: true},
+		{name: "unknown flag", args: []string{"--invalid-flag"}, willRun: false},
+		{name: "unknown shorthand", args: []string{"-Z"}, willRun: false},
+		{name: "missing flag value", args: []string{"--environment"}, willRun: false},
+		{name: "too many positional args", args: []string{"api", "web"}, willRun: false},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, test.willRun, commandWillRun(newCommand(), test.args))
+		})
+	}
+
+	t.Run("leaves flag state for cobra", func(t *testing.T) {
+		t.Parallel()
+
+		cmd := newCommand()
+		require.True(t, commandWillRun(cmd, []string{"--environment", "dev", "--docker-build-arg", "A=1"}))
+
+		environment, err := cmd.Flags().GetString("environment")
+		require.NoError(t, err)
+		assert.Empty(t, environment)
+		assert.False(t, cmd.Flags().Changed("environment"))
+
+		// Parsing the real flag set twice would append duplicates for repeatable flags.
+		require.NoError(t, cmd.ParseFlags([]string{"--docker-build-arg", "A=1"}))
+		buildArgs, err := cmd.Flags().GetStringArray("docker-build-arg")
+		require.NoError(t, err)
+		assert.Equal(t, []string{"A=1"}, buildArgs)
+	})
+
+	t.Run("accepts flags inherited from parent commands", func(t *testing.T) {
+		t.Parallel()
+
+		// Global flags live on the root command's persistent flag set and are only merged into
+		// the subcommand's flag set once cobra initializes it. Preflight must see them too.
+		root := &cobra.Command{Use: "azd"}
+		root.PersistentFlags().Bool("debug", false, "Enables debugging and diagnostics output.")
+		root.PersistentFlags().StringP("cwd", "C", "", "Sets the current working directory.")
+		cmd := newCommand()
+		root.AddCommand(cmd)
+
+		assert.True(t, commandWillRun(cmd, []string{"--debug"}))
+		assert.True(t, commandWillRun(cmd, []string{"-C", "some-dir"}))
+		assert.False(t, commandWillRun(cmd, []string{"--not-a-global-flag"}))
+	})
+
+	t.Run("skips validation when flag parsing is disabled", func(t *testing.T) {
+		t.Parallel()
+
+		cmd := newCommand()
+		cmd.DisableFlagParsing = true
+		assert.True(t, commandWillRun(cmd, []string{"--invalid-flag", "--help"}))
+	})
+}
+
+func TestResolveExtensionRequirementDependenciesConflictingEdges(t *testing.T) {
+	t.Parallel()
+
+	// pack depends on both b and d, while b depends on an incompatible version of d.
+	newManager := func(packDependencies []extensions.ExtensionDependency) *fakeExtensionAutoInstallManager {
+		return &fakeExtensionAutoInstallManager{
+			installed: map[string]*extensions.Extension{},
+			available: []*extensions.ExtensionMetadata{
+				{
+					Id:     "demo.pack",
+					Source: "azd",
+					Versions: []extensions.ExtensionVersion{{
+						Version:      "1.0.0",
+						Dependencies: packDependencies,
+					}},
+				},
+				{
+					Id:     "demo.b",
+					Source: "azd",
+					Versions: []extensions.ExtensionVersion{{
+						Version:      "1.0.0",
+						Dependencies: []extensions.ExtensionDependency{{Id: "demo.d", Version: "<2.0.0"}},
+					}},
+				},
+				{
+					Id:     "demo.d",
+					Source: "azd",
+					Versions: []extensions.ExtensionVersion{
+						{Version: "2.0.0"},
+						{Version: "1.0.0"},
+					},
+				},
+			},
+		}
+	}
+
+	orderings := map[string][]extensions.ExtensionDependency{
+		"transitive edge first": {{Id: "demo.b"}, {Id: "demo.d", Version: ">=2.0.0"}},
+		"direct edge first":     {{Id: "demo.d", Version: ">=2.0.0"}, {Id: "demo.b"}},
+	}
+
+	for name, packDependencies := range orderings {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			manager := newManager(packDependencies)
+			requirements := map[string]projectExtensionRequirement{
+				"demo.pack": {extension: manager.available[0], explicit: true},
+			}
+
+			_, err := resolveExtensionRequirementDependencies(t.Context(), manager, requirements)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "demo.d")
+			assert.Contains(t, err.Error(), "does not satisfy constraint")
+		})
+	}
+
+	t.Run("compatible edges resolve", func(t *testing.T) {
+		t.Parallel()
+
+		manager := newManager([]extensions.ExtensionDependency{{Id: "demo.b"}, {Id: "demo.d", Version: "<2.0.0"}})
+		requirements := map[string]projectExtensionRequirement{
+			"demo.pack": {extension: manager.available[0], explicit: true},
+		}
+
+		resolved, err := resolveExtensionRequirementDependencies(t.Context(), manager, requirements)
+		require.NoError(t, err)
+		assert.Equal(t, "1.0.0", resolved["demo.d"].version)
+	})
+}
+
+func TestProviderLookupPartition(t *testing.T) {
+	t.Parallel()
+
+	metadata := func(id string) *extensions.ExtensionMetadata {
+		return &extensions.ExtensionMetadata{Id: id}
+	}
+	conflict := fmt.Errorf("demo.conflict version 1.0.0 does not provide host %q", "demo.host")
+	lookup := providerLookup{
+		installed: map[string]*extensions.Extension{
+			// Installed ids are matched case-insensitively.
+			"demo.installed": {Id: "demo.installed", Version: "1.0.0"},
+		},
+		resolvedDependencies: map[string]resolvedExtensionDependency{
+			"demo.dependency": {parentId: "demo.pack", version: "1.0.0"},
+		},
+		requirementConflicts: map[string]error{
+			"demo.conflict": conflict,
+			// An extension that is both an unsatisfiable requirement and a pack dependency.
+			"demo.both": conflict,
+		},
+	}
+
+	matches := []*extensions.ExtensionMetadata{
+		metadata("demo.available"),
+		metadata("Demo.Installed"),
+		metadata("demo.dependency"),
+		metadata("demo.conflict"),
+		metadata("demo.both"),
+	}
+	lookup.resolvedDependencies["demo.both"] = resolvedExtensionDependency{parentId: "demo.pack", version: "2.0.0"}
+
+	candidates := lookup.partition(matches)
+
+	require.Len(t, candidates.installable, 1)
+	assert.Equal(t, "demo.available", candidates.installable[0].Id)
+	// A requirement conflict takes precedence over the same extension being a pack dependency.
+	assert.Equal(t, []string{"demo.both", "demo.conflict"}, slices.Sorted(maps.Keys(candidates.requirementConflicts)))
+	assert.Equal(t, []string{"demo.dependency"}, slices.Sorted(maps.Keys(candidates.dependencyConflicts)))
+
+	t.Run("reports requirement conflicts before dependency conflicts", func(t *testing.T) {
+		t.Parallel()
+
+		err := candidates.conflictError(extensions.ServiceTargetProviderCapability, "demo.host")
+		require.ErrorIs(t, err, conflict)
+	})
+
+	t.Run("reports dependency conflicts when no requirement conflicts exist", func(t *testing.T) {
+		t.Parallel()
+
+		dependencyOnly := providerCandidates{dependencyConflicts: candidates.dependencyConflicts}
+		err := dependencyOnly.conflictError(extensions.ServiceTargetProviderCapability, "demo.host")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "extension demo.pack requires dependency demo.dependency version 1.0.0")
+		assert.Contains(t, err.Error(), `does not provide service-target-provider "demo.host"`)
+	})
+
+	t.Run("reports no error when the provider is simply unavailable", func(t *testing.T) {
+		t.Parallel()
+
+		empty := providerLookup{}.partition(nil)
+		assert.Empty(t, empty.installable)
+		assert.NoError(t, empty.conflictError(extensions.ServiceTargetProviderCapability, "demo.host"))
+	})
 }

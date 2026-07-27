@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"maps"
 	"slices"
@@ -21,6 +22,7 @@ import (
 	"github.com/azure/azure-dev/cli/azd/pkg/output/ux"
 	"github.com/azure/azure-dev/cli/azd/pkg/project"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
 type projectExtensionRequirement struct {
@@ -34,6 +36,19 @@ type resolvedExtensionDependency struct {
 	version      string
 	capabilities []extensions.CapabilityType
 	providers    []extensions.Provider
+}
+
+// extensionRef identifies an extension within a registry source, normalized for case-insensitive
+// comparison. Dependency resolution tracks in-flight extensions by source and id because the same
+// id can be published by more than one source, while resolved selections are keyed by id alone to
+// match how installation reuses whatever is already installed.
+type extensionRef struct {
+	source string
+	id     string
+}
+
+func newExtensionRef(source string, id string) extensionRef {
+	return extensionRef{source: strings.ToLower(source), id: strings.ToLower(id)}
 }
 
 func projectCommandSupportsExtensionAutoInstall(cmd *cobra.Command) bool {
@@ -58,13 +73,169 @@ func projectCommandSupportsExtensionAutoInstall(cmd *cobra.Command) bool {
 	}
 }
 
+// commandWillRun reports whether cobra will actually run cmd for the supplied arguments.
+// rootCmd.Find resolves a command path but does not apply cobra's help short-circuit and does
+// not reject invalid flags or arguments, so preflight must not treat every resolved command as
+// one that executes. Installing extensions for `azd up --help` or `azd up --invalid` would
+// mutate user state for an invocation that never runs.
+func commandWillRun(cmd *cobra.Command, args []string) bool {
+	if cmd.DisableFlagParsing {
+		// Cobra forwards the arguments unparsed, so there is nothing to validate here.
+		return true
+	}
+
+	flags := mirroredFlagSet(cmd)
+	if err := flags.Parse(args); err != nil {
+		return false
+	}
+
+	// Both flags make cobra render help or documentation instead of running the command.
+	for _, name := range []string{"help", "docs"} {
+		if !flags.Changed(name) {
+			continue
+		}
+		if requested, err := flags.GetBool(name); err == nil && requested {
+			return false
+		}
+	}
+
+	return cmd.ValidateArgs(flags.Args()) == nil
+}
+
+// mirroredFlagSet returns a flag set that parses identically to cmd's flags but records values
+// instead of binding them. Parsing cmd's own flag set twice would double-apply values for
+// repeatable flags and trigger side effects in custom flag values (azd's --docs flag sets --help
+// and swaps the command's help function from within Set), so preflight validation runs against
+// this copy and leaves the real flag state for cobra to populate during execution.
+func mirroredFlagSet(cmd *cobra.Command) *pflag.FlagSet {
+	// Mirrors the start of cobra's execute(): InitDefaultHelpFlag merges the persistent flags
+	// inherited from parent commands into cmd.Flags() before any parsing happens. Without it the
+	// copy would be missing global flags such as --cwd and --debug and reject them as unknown.
+	cmd.InitDefaultHelpFlag()
+
+	flags := pflag.NewFlagSet(cmd.Name(), pflag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.ParseErrorsAllowlist.UnknownFlags = cmd.FParseErrWhitelist.UnknownFlags
+	cmd.Flags().VisitAll(func(flag *pflag.Flag) {
+		flags.AddFlag(&pflag.Flag{
+			Name:        flag.Name,
+			Shorthand:   flag.Shorthand,
+			Usage:       flag.Usage,
+			Value:       &recordedFlagValue{valueType: flag.Value.Type()},
+			DefValue:    flag.DefValue,
+			NoOptDefVal: flag.NoOptDefVal,
+		})
+	})
+
+	return flags
+}
+
+// recordedFlagValue accepts any input for a mirrored flag and records it verbatim so the value
+// can be inspected without running the real flag's Set implementation.
+type recordedFlagValue struct {
+	valueType string
+	value     string
+}
+
+func (v *recordedFlagValue) String() string {
+	return v.value
+}
+
+func (v *recordedFlagValue) Set(value string) error {
+	v.value = value
+	return nil
+}
+
+func (v *recordedFlagValue) Type() string {
+	return v.valueType
+}
+
+// providerLookup carries the state needed to decide which of the extensions publishing a provider
+// can actually be installed to supply it. The maps are keyed by lowercase extension id, matching
+// the case-insensitive comparison the extension manager applies to extension ids.
+type providerLookup struct {
+	// installed holds the currently installed extensions, keyed as the manager reports them.
+	installed map[string]*extensions.Extension
+	// resolvedDependencies holds extensions that installation will pull in as pack dependencies.
+	resolvedDependencies map[string]resolvedExtensionDependency
+	// requirementConflicts holds explicit requirements whose constrained version cannot supply
+	// the provider, mapped to the conflict to report.
+	requirementConflicts map[string]error
+}
+
+// providerCandidates partitions the extensions publishing a provider into those that can be
+// installed and the reasons the remainder were excluded.
+type providerCandidates struct {
+	installable          []*extensions.ExtensionMetadata
+	requirementConflicts map[string]error
+	dependencyConflicts  map[string]resolvedExtensionDependency
+}
+
+// partition splits matches into installable candidates and the reasons for excluding the rest.
+// Extensions that are already installed are dropped without a reason because an installed
+// extension that does not supply the provider cannot be resolved by installing anything.
+func (l providerLookup) partition(matches []*extensions.ExtensionMetadata) providerCandidates {
+	candidates := providerCandidates{
+		requirementConflicts: map[string]error{},
+		dependencyConflicts:  map[string]resolvedExtensionDependency{},
+	}
+
+	for _, extension := range matches {
+		extensionId := strings.ToLower(extension.Id)
+
+		if conflict, hasConflict := l.requirementConflicts[extensionId]; hasConflict {
+			candidates.requirementConflicts[extension.Id] = conflict
+			continue
+		}
+		if dependency, isDependency := l.resolvedDependencies[extensionId]; isDependency {
+			candidates.dependencyConflicts[extension.Id] = dependency
+			continue
+		}
+		if _, isInstalled := installedExtensionById(l.installed, extension.Id); isInstalled {
+			continue
+		}
+
+		candidates.installable = append(candidates.installable, extension)
+	}
+
+	return candidates
+}
+
+// conflictError reports why no candidate can supply the provider, or nil when the provider is
+// simply unavailable. Conflicts are reported by lowest extension id so the message is stable.
+func (c providerCandidates) conflictError(
+	capability extensions.CapabilityType,
+	provider string,
+) error {
+	if len(c.requirementConflicts) > 0 {
+		extensionId := slices.Sorted(maps.Keys(c.requirementConflicts))[0]
+		return c.requirementConflicts[extensionId]
+	}
+
+	if len(c.dependencyConflicts) > 0 {
+		extensionId := slices.Sorted(maps.Keys(c.dependencyConflicts))[0]
+		dependency := c.dependencyConflicts[extensionId]
+		return fmt.Errorf(
+			"extension %s requires dependency %s version %s, which does not provide %s %q",
+			dependency.parentId,
+			extensionId,
+			dependency.version,
+			capability,
+			provider,
+		)
+	}
+
+	return nil
+}
+
+// findExtensionForProvider selects an installable extension that supplies the given provider,
+// prompting when more than one is available. It returns a nil extension and a nil error when no
+// extension publishes the provider, and an error when one does but cannot be installed to supply it.
 func findExtensionForProvider(
 	ctx context.Context,
 	console input.Console,
 	extensionManager extensionAutoInstallManager,
-	installed map[string]*extensions.Extension,
-	resolvedDependencies map[string]resolvedExtensionDependency,
-	requirementConflicts map[string]error,
+	lookup providerLookup,
 	capability extensions.CapabilityType,
 	provider string,
 ) (*extensions.ExtensionMetadata, error) {
@@ -75,45 +246,13 @@ func findExtensionForProvider(
 	if err != nil {
 		return nil, fmt.Errorf("finding extension for provider %q: %w", provider, err)
 	}
-	matches = filterExtensionsForProvider(matches, capability, provider)
-	matchedRequirementConflicts := map[string]error{}
-	matches = slices.DeleteFunc(matches, func(extension *extensions.ExtensionMetadata) bool {
-		conflict, hasConflict := requirementConflicts[strings.ToLower(extension.Id)]
-		if hasConflict {
-			matchedRequirementConflicts[extension.Id] = conflict
-		}
-		return hasConflict
-	})
-	dependencyConflicts := map[string]resolvedExtensionDependency{}
-	matches = slices.DeleteFunc(matches, func(extension *extensions.ExtensionMetadata) bool {
-		dependency, isDependency := resolvedDependencies[strings.ToLower(extension.Id)]
-		if isDependency {
-			dependencyConflicts[extension.Id] = dependency
-		}
-		return isDependency
-	})
-	matches = uninstalledExtensionMatches(matches, installed)
-	if len(matches) == 0 {
-		if len(matchedRequirementConflicts) > 0 {
-			extensionId := slices.Sorted(maps.Keys(matchedRequirementConflicts))[0]
-			return nil, matchedRequirementConflicts[extensionId]
-		}
-		if len(dependencyConflicts) > 0 {
-			extensionId := slices.Sorted(maps.Keys(dependencyConflicts))[0]
-			dependency := dependencyConflicts[extensionId]
-			return nil, fmt.Errorf(
-				"extension %s requires dependency %s version %s, which does not provide %s %q",
-				dependency.parentId,
-				extensionId,
-				dependency.version,
-				capability,
-				provider,
-			)
-		}
-		return nil, nil
+
+	candidates := lookup.partition(filterExtensionsForProvider(matches, capability, provider))
+	if len(candidates.installable) == 0 {
+		return nil, candidates.conflictError(capability, provider)
 	}
 
-	return promptForExtensionChoice(ctx, console, matches)
+	return promptForExtensionChoice(ctx, console, candidates.installable)
 }
 
 func uninstalledExtensionMatches(
@@ -138,29 +277,35 @@ func installedExtensionById(
 	return nil, false
 }
 
+// versionSatisfiesConstraint reports whether an already selected extension version satisfies a
+// declared semver constraint. An empty constraint matches any version.
+func versionSatisfiesConstraint(extensionId string, version string, constraint string) bool {
+	if constraint == "" {
+		return true
+	}
+
+	metadata := &extensions.ExtensionMetadata{
+		Id:       extensionId,
+		Versions: []extensions.ExtensionVersion{{Version: version}},
+	}
+	_, err := extensions.ResolveExtensionVersion(metadata, constraint, nil)
+	return err == nil
+}
+
 func validateInstalledExtensionVersion(
 	installed *extensions.Extension,
 	versionPreference string,
 ) error {
-	if versionPreference == "" {
+	if versionSatisfiesConstraint(installed.Id, installed.Version, versionPreference) {
 		return nil
 	}
 
-	installedMetadata := &extensions.ExtensionMetadata{
-		Id: installed.Id,
-		Versions: []extensions.ExtensionVersion{{
-			Version: installed.Version,
-		}},
-	}
-	if _, err := extensions.ResolveExtensionVersion(installedMetadata, versionPreference, nil); err != nil {
-		return fmt.Errorf(
-			"installed extension %s version %s does not satisfy constraint %q",
-			installed.Id,
-			installed.Version,
-			versionPreference,
-		)
-	}
-	return nil
+	return fmt.Errorf(
+		"installed extension %s version %s does not satisfy constraint %q",
+		installed.Id,
+		installed.Version,
+		versionPreference,
+	)
 }
 
 func resolveExtensionRequirementDependencies(
@@ -169,7 +314,7 @@ func resolveExtensionRequirementDependencies(
 	requirements map[string]projectExtensionRequirement,
 ) (map[string]resolvedExtensionDependency, error) {
 	resolved := map[string]resolvedExtensionDependency{}
-	resolving := map[string]struct{}{}
+	resolving := map[extensionRef]struct{}{}
 
 	for _, requirement := range sortedProjectExtensionRequirements(requirements) {
 		version, err := extensions.ResolveExtensionVersion(
@@ -181,7 +326,7 @@ func resolveExtensionRequirementDependencies(
 			return nil, fmt.Errorf("resolving required extension %s: %w", requirement.extension.Id, err)
 		}
 
-		key := strings.ToLower(requirement.extension.Source + "\x00" + requirement.extension.Id)
+		key := newExtensionRef(requirement.extension.Source, requirement.extension.Id)
 		resolving[key] = struct{}{}
 		err = resolveExtensionDependencies(
 			ctx,
@@ -206,36 +351,42 @@ func resolveExtensionDependencies(
 	parent *extensions.ExtensionMetadata,
 	dependencies []extensions.ExtensionDependency,
 	resolved map[string]resolvedExtensionDependency,
-	resolving map[string]struct{},
+	resolving map[extensionRef]struct{},
 ) error {
 	for _, dependency := range dependencies {
-		key := strings.ToLower(parent.Source + "\x00" + dependency.Id)
+		key := newExtensionRef(parent.Source, dependency.Id)
 		if _, isResolving := resolving[key]; isResolving {
 			return fmt.Errorf("dependency cycle detected involving extension %s", dependency.Id)
 		}
 		dependencyId := strings.ToLower(dependency.Id)
-		if _, isResolved := resolved[dependencyId]; isResolved {
+		if resolvedDependency, isResolved := resolved[dependencyId]; isResolved {
+			// Another edge of the graph already selected a version. Installation resolves each edge
+			// against whatever is installed at that point, so a version that satisfies only one edge
+			// fails partway through installation instead of during preflight.
+			if !versionSatisfiesConstraint(dependency.Id, resolvedDependency.version, dependency.Version) {
+				return fmt.Errorf(
+					"dependency %s version %s required by extension %s "+
+						"does not satisfy constraint %q required by extension %s",
+					dependency.Id,
+					resolvedDependency.version,
+					resolvedDependency.parentId,
+					dependency.Version,
+					parent.Id,
+				)
+			}
 			continue
 		}
 
 		// Installation reuses a compatible installed dependency instead of replacing it with the registry selection.
 		installedDependency, err := extensionManager.GetInstalled(extensions.FilterOptions{Id: dependency.Id})
 		if err == nil && installedDependency != nil {
-			if dependency.Version != "" {
-				installedMetadata := &extensions.ExtensionMetadata{
-					Id: dependency.Id,
-					Versions: []extensions.ExtensionVersion{{
-						Version: installedDependency.Version,
-					}},
-				}
-				if _, err := extensions.ResolveExtensionVersion(installedMetadata, dependency.Version, nil); err != nil {
-					return fmt.Errorf(
-						"installed dependency %s version %s does not satisfy constraint %q",
-						dependency.Id,
-						installedDependency.Version,
-						dependency.Version,
-					)
-				}
+			if !versionSatisfiesConstraint(dependency.Id, installedDependency.Version, dependency.Version) {
+				return fmt.Errorf(
+					"installed dependency %s version %s does not satisfy constraint %q",
+					dependency.Id,
+					installedDependency.Version,
+					dependency.Version,
+				)
 			}
 
 			resolved[dependencyId] = resolvedExtensionDependency{
@@ -475,9 +626,11 @@ func missingProjectExtensions(
 			ctx,
 			console,
 			extensionManager,
-			installed,
-			resolvedDependencies,
-			requirementConflicts,
+			providerLookup{
+				installed:            installed,
+				resolvedDependencies: resolvedDependencies,
+				requirementConflicts: requirementConflicts,
+			},
 			capability,
 			provider,
 		)
@@ -542,8 +695,13 @@ func tryAutoInstallProjectExtensions(
 	ctx context.Context,
 	rootContainer *ioc.NestedContainer,
 	foundCmd *cobra.Command,
+	args []string,
 ) (handled bool, installed bool, err error) {
 	if !projectCommandSupportsExtensionAutoInstall(foundCmd) {
+		return false, false, nil
+	}
+
+	if !commandWillRun(foundCmd, args) {
 		return false, false, nil
 	}
 
