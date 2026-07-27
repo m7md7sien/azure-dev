@@ -7,10 +7,16 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/azure/azure-dev/cli/azd/internal/tracing/events"
+	"github.com/azure/azure-dev/cli/azd/internal/tracing/fields"
 	"github.com/azure/azure-dev/cli/azd/pkg/azdext"
 	"github.com/azure/azure-dev/cli/azd/pkg/extensions"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	tracesdk "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -78,15 +84,63 @@ func requireCode(t *testing.T, err error, expected codes.Code) {
 }
 
 func Test_TelemetryService_AcceptsDeclaredValue(t *testing.T) {
-	t.Parallel()
+	// Installs a global tracer provider, so this test cannot be parallel.
+	recorder := tracetest.NewSpanRecorder()
+	provider := tracesdk.NewTracerProvider(tracesdk.WithSpanProcessor(recorder))
 
-	resp, err := callWith(t, testExtension(), &azdext.ReportUsageAttributeRequest{
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() { otel.SetTracerProvider(previous) })
+
+	// Start a command span first so the usage span can be checked to share
+	// its trace, which is what makes the operation_Id join work downstream.
+	ctx, command := provider.Tracer("test").Start(t.Context(), "cmd.deploy")
+
+	extension := testExtension()
+	service := newTelemetryService(stubExtensionLookup{extension})
+	ctx = extensions.WithClaimsContext(ctx, &extensions.ExtensionClaims{
+		RegisteredClaims: jwt.RegisteredClaims{Subject: extension.Id},
+		Capabilities:     extension.Capabilities,
+		Source:           extension.Source,
+	})
+
+	resp, err := service.ReportUsageAttribute(ctx, &azdext.ReportUsageAttributeRequest{
 		Key:   testTelemetryKey,
 		Value: "container",
 	})
 
 	require.NoError(t, err)
 	require.True(t, resp.Accepted)
+
+	ended := recorder.Ended()
+	require.Len(t, ended, 1)
+
+	usage := ended[0]
+	require.Equal(t, events.ExtensionUsageEvent, usage.Name())
+	require.Equal(t, command.SpanContext().TraceID(), usage.SpanContext().TraceID())
+	require.ElementsMatch(t, []attribute.KeyValue{
+		fields.ExtensionId.String(extension.Id),
+		fields.ExtensionVersion.String(extension.Version),
+		attribute.String(testTelemetryKey, "container"),
+	}, usage.Attributes())
+}
+
+func Test_TelemetryService_RecordsNoSpanWhenRejected(t *testing.T) {
+	// Installs a global tracer provider, so this test cannot be parallel.
+	recorder := tracetest.NewSpanRecorder()
+	provider := tracesdk.NewTracerProvider(tracesdk.WithSpanProcessor(recorder))
+
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() { otel.SetTracerProvider(previous) })
+
+	_, err := callWith(t, testExtension(), &azdext.ReportUsageAttributeRequest{
+		Key:   testTelemetryKey,
+		Value: "byo_image",
+	})
+
+	requireCode(t, err, codes.InvalidArgument)
+	require.Empty(t, recorder.Ended())
 }
 
 func Test_TelemetryService_RequiresClaims(t *testing.T) {
