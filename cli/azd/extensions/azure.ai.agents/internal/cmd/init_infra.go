@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -187,6 +188,15 @@ func ejectInfra(projectRoot, provider string) error {
 }
 
 func ejectBrownfieldBicep(infraDir string, res *synthesis.Result) error {
+	for connectionName, credentials := range res.ConnectionCredentials {
+		if path, _, ok := firstLiteralCredential(credentials, ""); ok {
+			return exterrors.Validation(
+				exterrors.CodeInvalidAzureYaml,
+				fmt.Sprintf("connection %q contains a literal credential at credentials%s", connectionName, path),
+				"move the credential into an azd environment variable and reference it as ${VAR}",
+			)
+		}
+	}
 	written, err := writeBrownfieldTemplates(infraDir)
 	if err != nil {
 		return err
@@ -207,6 +217,29 @@ func ejectBrownfieldBicep(infraDir string, res *synthesis.Result) error {
 
 	printEjectSummary(written, project.BicepProviderName)
 	return nil
+}
+
+func firstLiteralCredential(value any, path string) (string, string, bool) {
+	switch value := value.(type) {
+	case string:
+		if strings.HasPrefix(value, "${") && strings.HasSuffix(value, "}") {
+			return "", "", false
+		}
+		return path, value, true
+	case map[string]any:
+		for _, key := range slices.Sorted(maps.Keys(value)) {
+			if foundPath, foundValue, ok := firstLiteralCredential(value[key], path+"."+key); ok {
+				return foundPath, foundValue, true
+			}
+		}
+	case []any:
+		for i, item := range value {
+			if foundPath, foundValue, ok := firstLiteralCredential(item, fmt.Sprintf("%s[%d]", path, i)); ok {
+				return foundPath, foundValue, true
+			}
+		}
+	}
+	return "", "", false
 }
 
 // ejectBicep writes the embedded Bicep tree plus the synthesized

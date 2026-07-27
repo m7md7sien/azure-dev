@@ -6,7 +6,11 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "5592084794470851297"
+      "templateHash": "14417074150668900431"
+    },
+    "azdFoundry": {
+      "kind": "brownfield",
+      "contractVersion": 1
     }
   },
   "definitions": {
@@ -205,8 +209,7 @@
   "variables": {
     "createAcr": "[equals(parameters('acrMode'), 'create')]",
     "useExistingAcr": "[equals(parameters('acrMode'), 'existing')]",
-    "configureAcr": "[or(variables('createAcr'), and(variables('useExistingAcr'), empty(parameters('existingAcrConnectionName'))))]",
-    "acrPullRoleId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d')]"
+    "configureAcr": "[or(variables('createAcr'), and(variables('useExistingAcr'), empty(parameters('existingAcrConnectionName'))))]"
   },
   "resources": {
     "foundryAccountPreview::project": {
@@ -321,9 +324,6 @@
           },
           "principalId": {
             "value": "[reference('foundryAccountPreview::project', '2025-04-01-preview', 'full').identity.principalId]"
-          },
-          "roleDefinitionId": {
-            "value": "[variables('acrPullRoleId')]"
           }
         },
         "template": {
@@ -333,7 +333,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.44.1.10279",
-              "templateHash": "16037481882754055301"
+              "templateHash": "752655472682753460"
             }
           },
           "parameters": {
@@ -348,24 +348,21 @@
               "metadata": {
                 "description": "Principal receiving AcrPull on the registry."
               }
-            },
-            "roleDefinitionId": {
-              "type": "string",
-              "metadata": {
-                "description": "AcrPull role definition resource ID."
-              }
             }
+          },
+          "variables": {
+            "acrPullRoleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d')]"
           },
           "resources": [
             {
               "type": "Microsoft.Authorization/roleAssignments",
               "apiVersion": "2022-04-01",
               "scope": "[resourceId('Microsoft.ContainerRegistry/registries', parameters('registryName'))]",
-              "name": "[guid(resourceId('Microsoft.ContainerRegistry/registries', parameters('registryName')), parameters('principalId'), parameters('roleDefinitionId'))]",
+              "name": "[guid(resourceId('Microsoft.ContainerRegistry/registries', parameters('registryName')), parameters('principalId'), variables('acrPullRoleDefinitionId'))]",
               "properties": {
                 "principalId": "[parameters('principalId')]",
                 "principalType": "ServicePrincipal",
-                "roleDefinitionId": "[parameters('roleDefinitionId')]"
+                "roleDefinitionId": "[variables('acrPullRoleDefinitionId')]"
               }
             }
           ]
@@ -394,9 +391,6 @@
           },
           "principalId": {
             "value": "[reference('foundryAccountPreview::project', '2025-04-01-preview', 'full').identity.principalId]"
-          },
-          "roleDefinitionId": {
-            "value": "[variables('acrPullRoleId')]"
           }
         },
         "template": {
@@ -406,7 +400,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.44.1.10279",
-              "templateHash": "16037481882754055301"
+              "templateHash": "752655472682753460"
             }
           },
           "parameters": {
@@ -421,24 +415,21 @@
               "metadata": {
                 "description": "Principal receiving AcrPull on the registry."
               }
-            },
-            "roleDefinitionId": {
-              "type": "string",
-              "metadata": {
-                "description": "AcrPull role definition resource ID."
-              }
             }
+          },
+          "variables": {
+            "acrPullRoleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d')]"
           },
           "resources": [
             {
               "type": "Microsoft.Authorization/roleAssignments",
               "apiVersion": "2022-04-01",
               "scope": "[resourceId('Microsoft.ContainerRegistry/registries', parameters('registryName'))]",
-              "name": "[guid(resourceId('Microsoft.ContainerRegistry/registries', parameters('registryName')), parameters('principalId'), parameters('roleDefinitionId'))]",
+              "name": "[guid(resourceId('Microsoft.ContainerRegistry/registries', parameters('registryName')), parameters('principalId'), variables('acrPullRoleDefinitionId'))]",
               "properties": {
                 "principalId": "[parameters('principalId')]",
                 "principalType": "ServicePrincipal",
-                "roleDefinitionId": "[parameters('roleDefinitionId')]"
+                "roleDefinitionId": "[variables('acrPullRoleDefinitionId')]"
               }
             }
           ]

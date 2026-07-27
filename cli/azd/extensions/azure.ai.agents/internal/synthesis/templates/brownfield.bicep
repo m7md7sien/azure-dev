@@ -6,6 +6,11 @@
 
 targetScope = 'resourceGroup'
 
+metadata azdFoundry = {
+  kind: 'brownfield'
+  contractVersion: 1
+}
+
 // User-defined types (match the deploymentType in main.bicep).
 
 @description('Shape of one model deployment entry in azure.yaml.')
@@ -153,12 +158,6 @@ resource existingRegistry 'Microsoft.ContainerRegistry/registries@2023-07-01' ex
   scope: resourceGroup(existingAcrSubscriptionId, existingAcrResourceGroup)
 }
 
-// Built-in AcrPull role. See: https://learn.microsoft.com/azure/role-based-access-control/built-in-roles
-var acrPullRoleId = subscriptionResourceId(
-  'Microsoft.Authorization/roleDefinitions',
-  '7f951dda-4ed3-4680-a7ca-43fe172d538d'
-)
-
 // The nested module makes the runtime project principal a deployment
 // parameter. The assignment name can then include that principal.
 module foundryAcrPullNew 'modules/acr-pull-role-assignment.bicep' = if (createAcr) {
@@ -166,7 +165,6 @@ module foundryAcrPullNew 'modules/acr-pull-role-assignment.bicep' = if (createAc
   params: {
     registryName: registry!.name
     principalId: foundryAccountPreview::project.identity.principalId
-    roleDefinitionId: acrPullRoleId
   }
 }
 
@@ -176,7 +174,6 @@ module foundryAcrPullExisting 'modules/acr-pull-role-assignment.bicep' = if (use
   params: {
     registryName: existingAcrName
     principalId: foundryAccountPreview::project.identity.principalId
-    roleDefinitionId: acrPullRoleId
   }
 }
 

@@ -568,12 +568,22 @@ func (p *FoundryProvisioningProvider) State(
 	options *azdext.ProvisioningStateOptions,
 ) (*azdext.ProvisioningStateResult, error) {
 	if p.isBrownfield() {
-		return &azdext.ProvisioningStateResult{
-			State: &azdext.ProvisioningState{
-				Outputs:   p.withTenantOutput(brownfieldOutputs(p.synthResult.Endpoint)),
-				Resources: []*azdext.ProvisioningResource{},
-			},
-		}, nil
+		rg, _, err := p.resolveBrownfieldTarget(ctx)
+		if err != nil {
+			return nil, err
+		}
+		client, err := p.deploymentsClient(ctx)
+		if err != nil {
+			return nil, err
+		}
+		resp, err := client.Get(ctx, rg, p.brownfieldDeploymentName(), nil)
+		if err != nil {
+			if isNotFound(err) {
+				return p.brownfieldState(nil), nil
+			}
+			return nil, exterrors.ServiceFromAzure(err, exterrors.OpArmDeploymentGet)
+		}
+		return p.brownfieldState(resp.Properties), nil
 	}
 
 	client, err := p.deploymentsClient(ctx)
@@ -602,6 +612,23 @@ func (p *FoundryProvisioningProvider) State(
 			Resources: armResourcesToProto(deploymentResources(resp.Properties)),
 		},
 	}, nil
+}
+
+func (p *FoundryProvisioningProvider) brownfieldState(
+	properties *armresources.DeploymentPropertiesExtended,
+) *azdext.ProvisioningStateResult {
+	outputs := brownfieldOutputs(p.synthResult.Endpoint)
+	for name, value := range armOutputsToProto(deploymentOutputs(properties)) {
+		if value != nil && value.Value != "" {
+			outputs[name] = value
+		}
+	}
+	return &azdext.ProvisioningStateResult{
+		State: &azdext.ProvisioningState{
+			Outputs:   p.withTenantOutput(outputs),
+			Resources: armResourcesToProto(deploymentResources(properties)),
+		},
+	}
 }
 
 // Deploy runs an ARM deployment of the resolved template (embedded ARM JSON
@@ -861,6 +888,21 @@ func (p *FoundryProvisioningProvider) brownfieldExistingACR(ctx context.Context)
 			"verify it is a full Microsoft.ContainerRegistry/registries ARM resource ID",
 		)
 	}
+	if !strings.EqualFold(resID.ResourceType.Namespace, "Microsoft.ContainerRegistry") ||
+		!strings.EqualFold(resID.ResourceType.Type, "registries") {
+		return nil, exterrors.Validation(
+			exterrors.CodeInvalidServiceConfig,
+			fmt.Sprintf("AZURE_CONTAINER_REGISTRY_RESOURCE_ID %q is not a container registry resource ID", resourceID),
+			"set it to a Microsoft.ContainerRegistry/registries resource ID",
+		)
+	}
+	if endpoint == "" {
+		return nil, exterrors.Dependency(
+			exterrors.CodeInvalidServiceConfig,
+			"AZURE_CONTAINER_REGISTRY_ENDPOINT is required when reusing an existing container registry",
+			"re-run `azd ai agent init` to select the registry and populate its login server",
+		)
+	}
 	connectionName, _ := p.envValue(ctx, "AZURE_AI_PROJECT_ACR_CONNECTION_NAME")
 	return &existingACR{
 		subscriptionID: resID.SubscriptionID,
@@ -1104,10 +1146,13 @@ func (p *FoundryProvisioningProvider) resolveBrownfieldTemplate(
 	}
 
 	if p.onDiskSource != nil {
+		if err := validateBrownfieldTemplateContract(p.onDiskSource.armTemplate); err != nil {
+			return nil, err
+		}
 		return &templateSource{
 			mode:        p.onDiskSource.mode,
 			armTemplate: p.onDiskSource.armTemplate,
-			parameters:  mergeParameters(p.onDiskSource.parameters, hostParams),
+			parameters:  mergeBrownfieldParameters(p.onDiskSource.parameters, hostParams),
 			sourcePath:  p.onDiskSource.sourcePath,
 		}, nil
 	}
@@ -1121,6 +1166,67 @@ func (p *FoundryProvisioningProvider) resolveBrownfieldTemplate(
 		armTemplate: tmpl,
 		parameters:  hostParams,
 	}, nil
+}
+
+var brownfieldProtectedParameters = map[string]struct{}{
+	"accountName":               {},
+	"projectName":               {},
+	"acrMode":                   {},
+	"includeAcr":                {},
+	"acrName":                   {},
+	"existingAcrSubscriptionId": {},
+	"existingAcrResourceGroup":  {},
+	"existingAcrName":           {},
+	"existingAcrEndpoint":       {},
+	"existingAcrConnectionName": {},
+	"location":                  {},
+	"tags":                      {},
+}
+
+func mergeBrownfieldParameters(userParams, hostParams map[string]any) map[string]any {
+	out := mergeParameters(userParams, hostParams)
+	for name := range brownfieldProtectedParameters {
+		if value, ok := hostParams[name]; ok {
+			out[name] = value
+		} else {
+			delete(out, name)
+		}
+	}
+	return out
+}
+
+func validateBrownfieldTemplateContract(tmpl map[string]any) error {
+	schema, _ := tmpl["$schema"].(string)
+	if !strings.Contains(schema, "/deploymentTemplate.json#") ||
+		strings.Contains(schema, "subscriptionDeploymentTemplate") {
+		return exterrors.Validation(
+			exterrors.CodeOnDiskParametersInvalid,
+			"on-disk brownfield Bicep must target resourceGroup scope",
+			"restore the generated `targetScope = 'resourceGroup'` declaration",
+		)
+	}
+	metadata, _ := tmpl["metadata"].(map[string]any)
+	contract, _ := metadata["azdFoundry"].(map[string]any)
+	kind, _ := contract["kind"].(string)
+	version, _ := contract["contractVersion"].(float64)
+	if kind != "brownfield" || version != 1 {
+		return exterrors.Validation(
+			exterrors.CodeOnDiskParametersInvalid,
+			"on-disk Bicep is not a supported azd Foundry brownfield template",
+			"run `azd ai agent init --infra=bicep` in a project without an existing `infra/` directory",
+		)
+	}
+	parameters, _ := tmpl["parameters"].(map[string]any)
+	for _, name := range []string{"accountName", "projectName", "deployments", "connections", "connectionCredentials"} {
+		if _, ok := parameters[name]; !ok {
+			return exterrors.Validation(
+				exterrors.CodeOnDiskParametersInvalid,
+				fmt.Sprintf("on-disk brownfield Bicep is missing required parameter %q", name),
+				"restore the parameter from the generated brownfield template",
+			)
+		}
+	}
+	return nil
 }
 
 // resolveTemplate returns the on-disk Bicep source if present, else the

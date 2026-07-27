@@ -263,6 +263,34 @@ services:
 	assert.Contains(t, localErr.Message, "Terraform")
 }
 
+func TestEjectInfra_BrownfieldRejectsLiteralCredentials(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	mustWriteFile(t, filepath.Join(dir, "azure.yaml"), `name: my-project
+services:
+  ai-project:
+    host: azure.ai.project
+    endpoint: https://acct.services.ai.azure.com/api/projects/p1
+  connection:
+    host: azure.ai.connection
+    category: CognitiveSearch
+    target: https://search.example
+    authType: ApiKey
+    credentials:
+      key: literal-secret-value
+`)
+
+	err := ejectInfra(dir, "bicep")
+	require.Error(t, err)
+	localErr, ok := errors.AsType[*azdext.LocalError](err)
+	require.True(t, ok)
+	assert.Equal(t, exterrors.CodeInvalidAzureYaml, localErr.Code)
+	assert.Contains(t, localErr.Message, "credentials.key")
+	assert.NotContains(t, localErr.Message, "literal-secret-value")
+	_, statErr := os.Stat(filepath.Join(dir, "infra"))
+	assert.True(t, os.IsNotExist(statErr))
+}
+
 func TestEjectInfra_HappyPath_WritesExpectedFiles(t *testing.T) {
 	// Intentionally NOT parallel: this test captures os.Stdout, and running
 	// it concurrently with other stdout-capturing tests in the same package

@@ -5,6 +5,8 @@ package provisioning
 
 import (
 	"context"
+	"encoding/json"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
@@ -13,6 +15,7 @@ import (
 
 	"azure.ai.projects/internal/synthesis"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/resources/armresources"
 	"github.com/azure/azure-dev/cli/azd/pkg/azdext"
 	"github.com/azure/azure-dev/cli/azd/pkg/tools/bicep"
 	"github.com/stretchr/testify/assert"
@@ -157,6 +160,24 @@ func TestBrownfieldExistingACRNeedsConfiguration(t *testing.T) {
 	assert.False(t, got)
 }
 
+func TestBrownfieldExistingACRValidation(t *testing.T) {
+	t.Parallel()
+	validID := "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.ContainerRegistry/registries/acr"
+
+	missingEndpoint := &FoundryProvisioningProvider{envName: "dev", azdClient: newKVEnvClient(t, map[string]string{
+		"AZURE_CONTAINER_REGISTRY_RESOURCE_ID": validID,
+	})}
+	_, err := missingEndpoint.brownfieldExistingACR(t.Context())
+	require.ErrorContains(t, err, "AZURE_CONTAINER_REGISTRY_ENDPOINT")
+
+	wrongType := &FoundryProvisioningProvider{envName: "dev", azdClient: newKVEnvClient(t, map[string]string{
+		"AZURE_CONTAINER_REGISTRY_RESOURCE_ID": "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.Storage/storageAccounts/notacr",
+		"AZURE_CONTAINER_REGISTRY_ENDPOINT":    "notacr.azurecr.io",
+	})}
+	_, err = wrongType.brownfieldExistingACR(t.Context())
+	require.ErrorContains(t, err, "not a container registry")
+}
+
 func TestBrownfieldACRName(t *testing.T) {
 	t.Parallel()
 
@@ -224,6 +245,33 @@ func TestBrownfieldDeploymentName(t *testing.T) {
 	lname := long.brownfieldDeploymentName()
 	assert.LessOrEqual(t, len(lname), 64, "got %q (len %d)", lname, len(lname))
 	assert.True(t, strings.HasSuffix(lname, "-brownfield"), "got %q", lname)
+}
+
+func TestBrownfieldStateMergesPersistedDeploymentOutputs(t *testing.T) {
+	t.Parallel()
+	p := &FoundryProvisioningProvider{
+		tenantID: "tenant",
+		synthResult: brownfieldResult(
+			"https://acct.services.ai.azure.com/api/projects/my-project", nil, nil),
+	}
+	properties := &armresources.DeploymentPropertiesExtended{
+		Outputs: map[string]any{
+			"AZURE_CONTAINER_REGISTRY_ENDPOINT": map[string]any{"type": "String", "value": "acr.azurecr.io"},
+			"EMPTY":                             map[string]any{"type": "String", "value": ""},
+		},
+		OutputResources: []*armresources.ResourceReference{{ID: new("/subscriptions/sub/resourceGroups/rg/providers/Test/type/name")}},
+	}
+
+	state := p.brownfieldState(properties).State
+
+	assert.Equal(t, "my-project", state.Outputs["AZURE_AI_PROJECT_NAME"].Value)
+	assert.Equal(t, "acr.azurecr.io", state.Outputs["AZURE_CONTAINER_REGISTRY_ENDPOINT"].Value)
+	assert.NotContains(t, state.Outputs, "EMPTY")
+	require.Len(t, state.Resources, 1)
+
+	empty := p.brownfieldState(nil).State
+	assert.Contains(t, empty.Outputs, "FOUNDRY_PROJECT_ENDPOINT")
+	assert.Empty(t, empty.Resources)
 }
 
 func TestBrownfieldParams(t *testing.T) {
@@ -396,7 +444,7 @@ func TestResolveBrownfieldTemplate(t *testing.T) {
 			})),
 			0o600,
 		))
-		stub := &stubCompiler{buildResult: bicep.BuildResult{Compiled: minimalARMTemplate()}}
+		stub := &stubCompiler{buildResult: bicep.BuildResult{Compiled: minimalBrownfieldARMTemplate(t)}}
 		p := &FoundryProvisioningProvider{
 			projectPath:      dir,
 			envName:          "dev",
@@ -409,7 +457,7 @@ func TestResolveBrownfieldTemplate(t *testing.T) {
 		src, err := p.resolveBrownfieldTemplate(t.Context(), func(string) {}, "acct", "rg", false)
 		require.NoError(t, err)
 		assert.Equal(t, templateModeBicep, src.mode)
-		assert.Equal(t, map[string]any{"value": "user-account"}, src.parameters["accountName"])
+		assert.Equal(t, map[string]any{"value": "acct"}, src.parameters["accountName"])
 		assert.Equal(t, map[string]any{"value": []any{"user-deployment"}}, src.parameters["deployments"])
 		assert.Equal(t, map[string]any{"value": "my-project"}, src.parameters["projectName"])
 		require.Len(t, stub.buildCalls, 1)
@@ -418,6 +466,64 @@ func TestResolveBrownfieldTemplate(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, stub.buildCalls, 1, "compiled source should be cached")
 	})
+}
+
+func TestValidateBrownfieldTemplateContract(t *testing.T) {
+	t.Parallel()
+
+	var valid map[string]any
+	require.NoError(t, json.Unmarshal([]byte(minimalBrownfieldARMTemplate(t)), &valid))
+	require.NoError(t, validateBrownfieldTemplateContract(valid))
+
+	unmarked := maps.Clone(valid)
+	delete(unmarked, "metadata")
+	require.Error(t, validateBrownfieldTemplateContract(unmarked))
+
+	wrongScope := maps.Clone(valid)
+	wrongScope["$schema"] = "https://schema.management.azure.com/schemas/2018-05-01/subscriptionDeploymentTemplate.json#"
+	require.Error(t, validateBrownfieldTemplateContract(wrongScope))
+
+	missingParam := maps.Clone(valid)
+	missingParam["parameters"] = map[string]any{}
+	require.Error(t, validateBrownfieldTemplateContract(missingParam))
+}
+
+func TestMergeBrownfieldParametersProtectsTargeting(t *testing.T) {
+	t.Parallel()
+	host := map[string]any{
+		"accountName": map[string]any{"value": "host-account"},
+		"projectName": map[string]any{"value": "host-project"},
+		"deployments": map[string]any{"value": []any{"host"}},
+	}
+	user := map[string]any{
+		"accountName": map[string]any{"value": "user-account"},
+		"projectName": map[string]any{"value": "user-project"},
+		"deployments": map[string]any{"value": []any{"user"}},
+		"acrMode":     map[string]any{"value": "existing"},
+	}
+
+	got := mergeBrownfieldParameters(user, host)
+
+	assert.Equal(t, host["accountName"], got["accountName"])
+	assert.Equal(t, host["projectName"], got["projectName"])
+	assert.Equal(t, user["deployments"], got["deployments"])
+	assert.NotContains(t, got, "acrMode")
+}
+
+func minimalBrownfieldARMTemplate(t *testing.T) string {
+	t.Helper()
+	var tmpl map[string]any
+	require.NoError(t, json.Unmarshal([]byte(minimalARMTemplate()), &tmpl))
+	tmpl["metadata"] = map[string]any{
+		"azdFoundry": map[string]any{"kind": "brownfield", "contractVersion": 1},
+	}
+	tmpl["parameters"] = map[string]any{
+		"accountName": map[string]any{}, "projectName": map[string]any{}, "deployments": map[string]any{},
+		"connections": map[string]any{}, "connectionCredentials": map[string]any{},
+	}
+	raw, err := json.Marshal(tmpl)
+	require.NoError(t, err)
+	return string(raw)
 }
 
 // TestBrownfieldReconcileMessage covers every combination the caller can

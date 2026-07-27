@@ -1230,7 +1230,7 @@ func TestBrownfieldARMTemplate_SecuresConnectionCredentials(t *testing.T) {
 	require.True(t, ok, "connectionCredentials param must be an object")
 	assert.Equal(t, "secureObject", credentials["type"])
 	assert.Contains(t, string(data),
-		"parameters('principalId'), parameters('roleDefinitionId')",
+		"parameters('principalId'), variables('acrPullRoleDefinitionId')",
 		"ACR role assignment name must include the assigned principal")
 }
 
