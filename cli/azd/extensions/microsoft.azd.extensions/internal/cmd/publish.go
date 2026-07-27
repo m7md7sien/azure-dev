@@ -474,6 +474,10 @@ func addOrUpdateExtension(
 				Dependencies:       extensionMetadata.Dependencies,
 				Providers:          extensionMetadata.Providers,
 				Artifacts:          artifacts,
+				// Telemetry declarations are authored directly in the
+				// registry and reviewed there, so carry them forward
+				// instead of dropping them on republish.
+				Telemetry: v.Telemetry,
 			}
 
 			return
