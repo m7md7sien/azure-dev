@@ -17,17 +17,6 @@ import (
 	"google.golang.org/grpc/metadata"
 )
 
-// W3C trace context carriers. The gRPC metadata keys match the HTTP header
-// names; the environment variables are what azd sets on the extension
-// process.
-const (
-	traceparentHeader = "traceparent"
-	tracestateHeader  = "tracestate"
-
-	traceparentEnv = "TRACEPARENT"
-	tracestateEnv  = "TRACESTATE"
-)
-
 type AzdClientOption func(*AzdClient) error
 
 // AzdClient is the client for the `azd` gRPC server.
@@ -117,21 +106,21 @@ func traceContextPairs(ctx context.Context) []string {
 	carrier := propagation.MapCarrier{}
 	propagation.TraceContext{}.Inject(ctx, carrier)
 
-	parent := carrier.Get(traceparentHeader)
-	state := carrier.Get(tracestateHeader)
+	parent := carrier.Get(TraceparentKey)
+	state := carrier.Get(TracestateKey)
 
 	if parent == "" {
-		parent = os.Getenv(traceparentEnv)
-		state = os.Getenv(tracestateEnv)
+		parent = os.Getenv(TraceparentEnv)
+		state = os.Getenv(TracestateEnv)
 	}
 
 	if parent == "" {
 		return nil
 	}
 
-	pairs := []string{traceparentHeader, parent}
+	pairs := []string{TraceparentKey, parent}
 	if state != "" {
-		pairs = append(pairs, tracestateHeader, state)
+		pairs = append(pairs, TracestateKey, state)
 	}
 
 	return pairs

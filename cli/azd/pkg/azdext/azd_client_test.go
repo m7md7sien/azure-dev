@@ -21,19 +21,19 @@ func testTraceparent() string {
 }
 
 func Test_WithAccessToken_PropagatesEnvTraceContext(t *testing.T) {
-	t.Setenv(traceparentEnv, testTraceparent())
-	t.Setenv(tracestateEnv, "vendor=value")
+	t.Setenv(TraceparentEnv, testTraceparent())
+	t.Setenv(TracestateEnv, "vendor=value")
 
 	md, ok := metadata.FromOutgoingContext(WithAccessToken(t.Context(), "token"))
 
 	require.True(t, ok)
 	require.Equal(t, []string{"token"}, md.Get("authorization"))
-	require.Equal(t, []string{testTraceparent()}, md.Get(traceparentHeader))
-	require.Equal(t, []string{"vendor=value"}, md.Get(tracestateHeader))
+	require.Equal(t, []string{testTraceparent()}, md.Get(TraceparentKey))
+	require.Equal(t, []string{"vendor=value"}, md.Get(TracestateKey))
 }
 
 func Test_WithAccessToken_PrefersContextSpan(t *testing.T) {
-	t.Setenv(traceparentEnv, testTraceparent())
+	t.Setenv(TraceparentEnv, testTraceparent())
 
 	traceId, err := trace.TraceIDFromHex("11111111111111111111111111111111")
 	require.NoError(t, err)
@@ -51,19 +51,19 @@ func Test_WithAccessToken_PrefersContextSpan(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, []string{
 		"00-11111111111111111111111111111111-2222222222222222-01",
-	}, md.Get(traceparentHeader))
+	}, md.Get(TraceparentKey))
 }
 
 func Test_WithAccessToken_OmitsMissingTraceContext(t *testing.T) {
-	t.Setenv(traceparentEnv, "")
-	t.Setenv(tracestateEnv, "")
+	t.Setenv(TraceparentEnv, "")
+	t.Setenv(TracestateEnv, "")
 
 	md, ok := metadata.FromOutgoingContext(WithAccessToken(t.Context(), "token"))
 
 	require.True(t, ok)
 	require.Equal(t, []string{"token"}, md.Get("authorization"))
-	require.Empty(t, md.Get(traceparentHeader))
-	require.Empty(t, md.Get(tracestateHeader))
+	require.Empty(t, md.Get(TraceparentKey))
+	require.Empty(t, md.Get(TracestateKey))
 }
 
 func Test_IsLocalhostAddress(t *testing.T) {
