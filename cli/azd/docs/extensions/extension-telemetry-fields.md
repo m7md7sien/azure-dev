@@ -20,10 +20,10 @@ for the reasoning behind this design.
 | Always rejected | Free-form values, values outside your declared set, keys you did not declare |
 
 Values must be a closed enum because that is what makes a privacy review
-possible. A shape-only rule (length and charset) would let a value like
-`byo_image:myregistry.azurecr.io/foo` through and leak a registry name, so the
-charset excludes `:` and `/` and the host compares each value against your
-declaration.
+possible. A shape-only rule (length and charset) would let someone pack a
+container image reference into a value and leak a private registry name, so
+the charset excludes `:` and `/` and the host compares each value against
+your declaration.
 
 ## Step 1: Declare the capability
 
