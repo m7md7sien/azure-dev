@@ -12,10 +12,12 @@ import (
 	"log"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/azure/azure-dev/cli/azd/internal"
 	"github.com/azure/azure-dev/cli/azd/pkg/extensions"
+	"github.com/azure/azure-dev/cli/azd/pkg/infra/provisioning"
 	"github.com/azure/azure-dev/cli/azd/pkg/input"
 	"github.com/azure/azure-dev/cli/azd/pkg/ioc"
 	"github.com/azure/azure-dev/cli/azd/pkg/output"
@@ -39,9 +41,9 @@ type resolvedExtensionDependency struct {
 }
 
 // extensionRef identifies an extension within a registry source, normalized for case-insensitive
-// comparison. Dependency resolution tracks in-flight extensions by source and id because the same
-// id can be published by more than one source, while resolved selections are keyed by id alone to
-// match how installation reuses whatever is already installed.
+// comparison. In-flight extensions are tracked by source and id because the same id can be
+// published by more than one source, while resolved selections are keyed by id alone to match how
+// installation reuses whatever is already installed.
 type extensionRef struct {
 	source string
 	id     string
@@ -74,10 +76,9 @@ func projectCommandSupportsExtensionAutoInstall(cmd *cobra.Command) bool {
 }
 
 // commandWillRun reports whether cobra will actually run cmd for the supplied arguments.
-// rootCmd.Find resolves a command path but does not apply cobra's help short-circuit and does
-// not reject invalid flags or arguments, so preflight must not treat every resolved command as
-// one that executes. Installing extensions for `azd up --help` or `azd up --invalid` would
-// mutate user state for an invocation that never runs.
+// rootCmd.Find resolves a command path but does not apply cobra's help short-circuit and does not
+// reject invalid flags or arguments, so preflight must not install extensions for an invocation
+// that never runs, such as `azd up --help` or `azd up --invalid`.
 func commandWillRun(cmd *cobra.Command, args []string) bool {
 	if cmd.DisableFlagParsing {
 		// Cobra forwards the arguments unparsed, so there is nothing to validate here.
@@ -103,14 +104,12 @@ func commandWillRun(cmd *cobra.Command, args []string) bool {
 }
 
 // mirroredFlagSet returns a flag set that parses identically to cmd's flags but records values
-// instead of binding them. Parsing cmd's own flag set twice would double-apply values for
-// repeatable flags and trigger side effects in custom flag values (azd's --docs flag sets --help
-// and swaps the command's help function from within Set), so preflight validation runs against
-// this copy and leaves the real flag state for cobra to populate during execution.
+// instead of binding them. Parsing cmd's own flag set twice would double-apply repeatable flags and
+// trigger side effects in custom flag values (azd's --docs flag sets --help and swaps the command's
+// help function from within Set).
 func mirroredFlagSet(cmd *cobra.Command) *pflag.FlagSet {
-	// Mirrors the start of cobra's execute(): InitDefaultHelpFlag merges the persistent flags
-	// inherited from parent commands into cmd.Flags() before any parsing happens. Without it the
-	// copy would be missing global flags such as --cwd and --debug and reject them as unknown.
+	// Mirrors the start of cobra's execute(): InitDefaultHelpFlag merges flags inherited from parent
+	// commands into cmd.Flags(). Without it the copy would reject global flags such as --cwd.
 	cmd.InitDefaultHelpFlag()
 
 	flags := pflag.NewFlagSet(cmd.Name(), pflag.ContinueOnError)
@@ -142,8 +141,30 @@ func (v *recordedFlagValue) String() string {
 }
 
 func (v *recordedFlagValue) Set(value string) error {
+	if err := validateFlagValue(v.valueType, value); err != nil {
+		return err
+	}
+
 	v.value = value
 	return nil
+}
+
+// validateFlagValue applies the parsing the real flag performs in Set, so preflight rejects a value
+// cobra will reject. The real Set is not called because custom pflag.Value implementations have
+// side effects (azd's --docs flag rewrites the command's help function). Types not listed accept
+// any string; TestPreflightValidatesEveryFlagValueType fails when a command introduces one that
+// does not.
+func validateFlagValue(valueType string, value string) error {
+	switch valueType {
+	case "bool":
+		_, err := strconv.ParseBool(value)
+		return err
+	case "int":
+		_, err := strconv.Atoi(value)
+		return err
+	default:
+		return nil
+	}
 }
 
 func (v *recordedFlagValue) Type() string {
@@ -154,7 +175,6 @@ func (v *recordedFlagValue) Type() string {
 // can actually be installed to supply it. The maps are keyed by lowercase extension id, matching
 // the case-insensitive comparison the extension manager applies to extension ids.
 type providerLookup struct {
-	// installed holds the currently installed extensions, keyed as the manager reports them.
 	installed map[string]*extensions.Extension
 	// resolvedDependencies holds extensions that installation will pull in as pack dependencies.
 	resolvedDependencies map[string]resolvedExtensionDependency
@@ -172,8 +192,8 @@ type providerCandidates struct {
 }
 
 // partition splits matches into installable candidates and the reasons for excluding the rest.
-// Extensions that are already installed are dropped without a reason because an installed
-// extension that does not supply the provider cannot be resolved by installing anything.
+// Already-installed extensions are dropped without a reason: one that does not supply the provider
+// cannot be resolved by installing anything.
 func (l providerLookup) partition(matches []*extensions.ExtensionMetadata) providerCandidates {
 	candidates := providerCandidates{
 		requirementConflicts: map[string]error{},
@@ -230,7 +250,7 @@ func (c providerCandidates) conflictError(
 
 // findExtensionForProvider selects an installable extension that supplies the given provider,
 // prompting when more than one is available. It returns a nil extension and a nil error when no
-// extension publishes the provider, and an error when one does but cannot be installed to supply it.
+// extension publishes the provider, and an error when one does but cannot supply it.
 func findExtensionForProvider(
 	ctx context.Context,
 	console input.Console,
@@ -361,7 +381,7 @@ func resolveExtensionDependencies(
 		dependencyId := strings.ToLower(dependency.Id)
 		if resolvedDependency, isResolved := resolved[dependencyId]; isResolved {
 			// Another edge of the graph already selected a version. Installation resolves each edge
-			// against whatever is installed at that point, so a version that satisfies only one edge
+			// against whatever is installed at that point, so a version satisfying only one edge
 			// fails partway through installation instead of during preflight.
 			if !versionSatisfiesConstraint(dependency.Id, resolvedDependency.version, dependency.Version) {
 				return fmt.Errorf(
@@ -456,6 +476,22 @@ func resolveExtensionDependencies(
 	return nil
 }
 
+// installedProvidesProvider reports whether an installed extension already supplies the provider,
+// in which case nothing needs to be installed for it.
+func installedProvidesProvider(
+	installed map[string]*extensions.Extension,
+	capability extensions.CapabilityType,
+	providerName string,
+) bool {
+	for extension := range maps.Values(installed) {
+		if extensionProvidesProvider(extension.Capabilities, extension.Providers, capability, providerName) {
+			return true
+		}
+	}
+
+	return false
+}
+
 func extensionProvidesProvider(
 	capabilities []extensions.CapabilityType,
 	providers []extensions.Provider,
@@ -483,6 +519,24 @@ func providerTypeForCapability(capability extensions.CapabilityType) (extensions
 	}
 }
 
+// providerIsBuiltIn reports whether azd itself implements the named provider. Core registers these
+// unconditionally, so no extension is ever required to supply them and the registry need not be
+// consulted, which would otherwise let an unreachable source fail an ordinary project. Matching is
+// case sensitive because the runtime resolves providers by their exact name.
+func providerIsBuiltIn(capability extensions.CapabilityType, provider string) bool {
+	switch capability {
+	case extensions.ServiceTargetProviderCapability:
+		return slices.Contains(project.BuiltInServiceTargetKinds(), project.ServiceTargetKind(provider))
+	case extensions.ProvisioningProviderCapability:
+		return slices.Contains(provisioning.BuiltInProviderKinds(), provisioning.ProviderKind(provider))
+	default:
+		return false
+	}
+}
+
+// filterExtensionsForProvider keeps the extensions whose selected version supplies the provider.
+// Earlier versions are ignored: a publisher that drops a provider in a later release has superseded
+// the versions carrying it, so installing one would be a downgrade.
 func filterExtensionsForProvider(
 	matches []*extensions.ExtensionMetadata,
 	capability extensions.CapabilityType,
@@ -490,9 +544,12 @@ func filterExtensionsForProvider(
 ) []*extensions.ExtensionMetadata {
 	filtered := make([]*extensions.ExtensionMetadata, 0, len(matches))
 	for _, extension := range matches {
-		providerExtension := extensionForProvider(extension, capability, providerName)
-		if len(providerExtension.Versions) > 0 {
-			filtered = append(filtered, providerExtension)
+		selectedVersion, err := extensions.ResolveExtensionVersion(extension, "", nil)
+		if err != nil {
+			continue
+		}
+		if extensionVersionProvidesProvider(selectedVersion, capability, providerName) {
+			filtered = append(filtered, extension)
 		}
 	}
 	return filtered
@@ -519,6 +576,9 @@ func resolvedDependencyProvidesProvider(
 	)
 }
 
+// extensionForProvider narrows an extension to every version supplying the provider. Unlike
+// filterExtensionsForProvider this ignores which version would be selected, so callers can tell an
+// extension that cannot supply the provider from one whose selected version happens not to.
 func extensionForProvider(
 	extension *extensions.ExtensionMetadata,
 	capability extensions.CapabilityType,
@@ -581,7 +641,8 @@ func missingProjectExtensions(
 	}
 
 	addProvider := func(capability extensions.CapabilityType, provider string) error {
-		if provider == "" {
+		if provider == "" || providerIsBuiltIn(capability, provider) ||
+			installedProvidesProvider(installed, capability, provider) {
 			return nil
 		}
 

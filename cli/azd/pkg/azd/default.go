@@ -27,6 +27,14 @@ import (
 
 const PlatformKindDefault platform.PlatformKind = "default"
 
+// provisionProviderMap holds the provisioning providers azd implements itself.
+// provisioning.BuiltInProviderKinds must list the same kinds, which
+// TestBuiltInProviderKindsMatchRegistrations enforces.
+var provisionProviderMap = map[provisioning.ProviderKind]any{
+	provisioning.Bicep:     infraBicep.NewBicepProvider,
+	provisioning.Terraform: infraTerraform.NewTerraformProvider,
+}
+
 // DefaultPlatform manages the Azd configuration of the default platform
 type DefaultPlatform struct {
 }
@@ -75,12 +83,6 @@ func (p *DefaultPlatform) ConfigureContainer(container *ioc.NestedContainer) err
 		})
 
 	container.MustRegisterTransient(infraBicep.NewBicepProvider)
-
-	// Provisioning Providers
-	provisionProviderMap := map[provisioning.ProviderKind]any{
-		provisioning.Bicep:     infraBicep.NewBicepProvider,
-		provisioning.Terraform: infraTerraform.NewTerraformProvider,
-	}
 
 	for provider, constructor := range provisionProviderMap {
 		container.MustRegisterNamedTransient(string(provider), constructor)

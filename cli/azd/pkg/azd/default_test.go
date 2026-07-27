@@ -4,6 +4,8 @@
 package azd
 
 import (
+	"maps"
+	"slices"
 	"testing"
 
 	"github.com/azure/azure-dev/cli/azd/pkg/infra/provisioning"
@@ -35,4 +37,15 @@ func Test_DefaultPlatform_ConfigureContainer(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, expected, actual)
 	})
+}
+
+// TestBuiltInProviderKindsMatchRegistrations keeps provisioning.BuiltInProviderKinds aligned with
+// the providers azd actually registers. Callers use that list to decide a provider needs no
+// extension, so a stale entry either consults the registry needlessly or skips a real requirement.
+func TestBuiltInProviderKindsMatchRegistrations(t *testing.T) {
+	require.ElementsMatch(
+		t,
+		slices.Collect(maps.Keys(provisionProviderMap)),
+		provisioning.BuiltInProviderKinds(),
+	)
 }

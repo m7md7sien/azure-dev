@@ -300,12 +300,16 @@ func createExtensionFilter(options *FilterOptions) extensionFilterPredicate {
 			}
 		}
 
-		// Check Provider filter - extension must have at least one version with a provider matching the specified name
+		// Check Provider filter - the version that would be selected must publish the provider.
+		// Matching any version would surface extensions whose current release dropped the provider,
+		// and installing one would silently pick a superseded version.
 		if options.Provider != "" {
-			hasProvider := slices.ContainsFunc(extension.Versions, func(version ExtensionVersion) bool {
-				return slices.ContainsFunc(version.Providers, func(provider Provider) bool {
-					return strings.EqualFold(provider.Name, options.Provider)
-				})
+			selectedVersion, err := ResolveExtensionVersion(extension, options.Version, nil)
+			if err != nil {
+				return false
+			}
+			hasProvider := slices.ContainsFunc(selectedVersion.Providers, func(provider Provider) bool {
+				return strings.EqualFold(provider.Name, options.Provider)
 			})
 			if !hasProvider {
 				return false

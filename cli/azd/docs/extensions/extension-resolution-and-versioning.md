@@ -230,7 +230,7 @@ Bundles run arbitrary extension binaries on your machine. The embedded `sha256` 
 
 ## Declaring Extensions in `azure.yaml`
 
-Projects can declare required extensions and version constraints in `azure.yaml`. When `azd init` runs, it reads this configuration and installs each extension automatically.
+Projects can declare required extensions and version constraints in `azure.yaml`. `azd init` reads this configuration and installs each extension automatically, and the project commands listed below re-check it before they run.
 
 ### Format
 
@@ -244,7 +244,7 @@ requiredVersions:
 
 Each entry maps an extension ID to a version constraint string. The same constraint syntax described in [Version Constraints](#version-constraints) applies here.
 
-### Behavior
+### Behavior during `azd init`
 
 - When `azd init` runs, it reads the `requiredVersions.extensions` map and installs each extension with the specified constraint.
 - If the constraint value is `null` or empty, `"latest"` is used (the highest available version is installed).
@@ -256,6 +256,30 @@ Each entry maps an extension ID to a version constraint string. The same constra
 > - `azd init` does not check whether an already-installed extension satisfies the configured version constraint.
 > - `azd init` does not apply `requiredAzdVersion` compatibility filtering.
 > - Dependency (transitive) installation calls `Install()` directly without passing through `requiredAzdVersion` compatibility filtering, so a dependency may be installed even if its `requiredAzdVersion` is not satisfied by the running `azd` version.
+
+### Behavior during project commands
+
+Cloning a repository or editing `azure.yaml` by hand skips `azd init`, so the project commands that need extensions to be present resolve them again before running: `up`, `provision`, `deploy`, `package`, `restore`, `down`, `show`, `monitor`, `infra generate` and `env refresh`.
+
+This preflight differs from `azd init` in two ways:
+
+- It **does** check installed extensions against the configured constraint, and fails with the conflicting constraint rather than proceeding with an unsatisfying version.
+- It resolves not only `requiredVersions.extensions` but also the providers the project implies (see below).
+
+Preflight only prompts for extensions that are genuinely missing. It runs after `azd` determines the command will actually execute, so `azd up --help`, an unknown flag, or an invalid argument never installs anything.
+
+### Inferred extension requirements
+
+Beyond the explicit `requiredVersions.extensions` list, project commands infer requirements from the providers the project uses:
+
+- Each `services.<name>.host` value must be supplied by an extension declaring the `service-target-provider` capability for that host.
+- Each `infra.provider` value (including entries under `infra.layers`) must be supplied by an extension declaring the `provisioning-provider` capability for that provider.
+
+Providers that `azd` implements itself are never resolved through an extension and never contact a registry: the built-in hosts (`appservice`, `containerapp`, `function`, `staticwebapp`, `aks`, `ai.endpoint`) and the built-in provisioning providers (`bicep`, `terraform`).
+
+When several extensions publish the same provider, `azd` prompts for the one to install. When an extension is already selected by `requiredVersions.extensions`, or is pulled in as a dependency of one, that version is used instead of installing another extension, and a version that cannot supply the provider is reported as a conflict.
+
+An extension only qualifies when the version `azd` would select publishes the provider. Older versions are not considered: a publisher that moves a provider to a different extension supersedes the versions that carried it, so `azd` never installs an earlier version to satisfy a provider. A provider that an installed extension already supplies is not resolved again.
 
 ## Caching
 

@@ -476,10 +476,10 @@ type ExecuteResult struct {
 	LatestVersion <-chan *update.VersionInfo
 }
 
-// newRootCmdForExecution builds the root command, constructing it from --cwd when one was
-// supplied so that cached AzdContext and ProjectConfig state resolves against the requested
-// project rather than the caller's directory. Cobra's PersistentPreRunE performs the real
-// directory change during execution, so the caller's directory is restored before returning.
+// newRootCmdForExecution builds the root command, constructing it from --cwd when one was supplied
+// so that cached AzdContext and ProjectConfig state resolves against the requested project. Cobra's
+// PersistentPreRunE performs the real directory change during execution, so the caller's directory
+// is restored before returning.
 func newRootCmdForExecution(
 	rootContainer *ioc.NestedContainer,
 	globalOpts *internal.GlobalCommandOptions,
