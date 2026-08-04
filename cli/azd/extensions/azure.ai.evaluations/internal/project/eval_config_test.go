@@ -24,13 +24,13 @@ dataset:
   version: "1"
 
 evaluators:
-  - builtin.task_adherence
+  - name: builtin.task_adherence
   - name: support-quality
     source: ./evaluators/support-quality.json
     threshold: 4.0
     initialization_parameters:
       deployment_name: gpt-4.1-nano
-  - safety-check
+  - name: safety-check
 
 target:
   type: agent
@@ -89,9 +89,8 @@ func TestCustomEvaluators_OnlyOwnsLocalSources(t *testing.T) {
 	require.Equal(t, "./evaluators/support-quality.json", owned[0].Source)
 }
 
-// Evaluator entries accept a bare string or a mapping carrying the rest of the
-// declaration.
-func TestEvaluatorList_MixedForms(t *testing.T) {
+// Every entry is a mapping, whether it carries anything beyond a name or not.
+func TestEvaluatorList_EntriesAreMappings(t *testing.T) {
 	cfg := loadFromString(t, sampleEvalConfig)
 	require.Len(t, cfg.Evaluators, 3)
 
@@ -113,8 +112,9 @@ func TestEvaluatorList_MixedForms(t *testing.T) {
 	require.Nil(t, cfg.Evaluators[2].Threshold)
 }
 
-// Round-tripping must not rewrite bare names into mappings.
-func TestEvaluatorList_RoundTripKeepsCompactForm(t *testing.T) {
+// A name-only evaluator writes back as a mapping, so what the CLI emits is
+// what its own decoder accepts.
+func TestEvaluatorList_RoundTripKeepsTheMappingForm(t *testing.T) {
 	threshold := 4.0
 	list := evalcore.EvaluatorList{
 		{Name: "builtin.relevance"},
@@ -130,8 +130,8 @@ func TestEvaluatorList_RoundTripKeepsCompactForm(t *testing.T) {
 	require.Equal(t, "builtin.relevance", back[0].Name)
 	require.Nil(t, back[0].Threshold)
 	require.NotNil(t, back[1].Threshold)
-	require.Contains(t, string(out), "- builtin.relevance",
-		"an evaluator with only a name should stay a plain string")
+	require.Contains(t, string(out), "- name: builtin.relevance",
+		"a name-only evaluator must still be written as a mapping")
 }
 
 // An evaluator carrying a source must not be flattened to its name, or the
@@ -165,7 +165,7 @@ func TestValidate_Rejects(t *testing.T) {
 	}{
 		{
 			name:    "dataset without a name",
-			body:    "dataset:\n  source: ./d.jsonl\nevaluators: [builtin.relevance]\n",
+			body:    "dataset:\n  source: ./d.jsonl\nevaluators: [{name: builtin.relevance}]\n",
 			wantErr: "'name' is required",
 		},
 		{
@@ -180,7 +180,7 @@ func TestValidate_Rejects(t *testing.T) {
 		},
 		{
 			name:    "duplicate evaluator",
-			body:    "evaluators: [builtin.relevance, builtin.relevance]\n",
+			body:    "evaluators: [{name: builtin.relevance}, {name: builtin.relevance}]\n",
 			wantErr: "duplicate evaluator name",
 		},
 		{
@@ -190,12 +190,12 @@ func TestValidate_Rejects(t *testing.T) {
 		},
 		{
 			name:    "unsupported target type",
-			body:    "evaluators: [builtin.relevance]\ntarget:\n  type: prompt\n",
+			body:    "evaluators: [{name: builtin.relevance}]\ntarget:\n  type: prompt\n",
 			wantErr: "is not supported",
 		},
 		{
 			name: "invalid evaluation level",
-			body: "evaluators: [builtin.relevance]\n" +
+			body: "evaluators: [{name: builtin.relevance}]\n" +
 				"options:\n  evaluation_level: sentence\n",
 			wantErr: "evaluation_level",
 		},
@@ -217,7 +217,7 @@ func TestResolveEvalConfigPath(t *testing.T) {
 		t.Helper()
 		for _, n := range names {
 			require.NoError(t, os.WriteFile(
-				filepath.Join(dir, n), []byte("evaluators: [builtin.relevance]\n"), 0o600))
+				filepath.Join(dir, n), []byte("evaluators: [{name: builtin.relevance}]\n"), 0o600))
 		}
 	}
 

@@ -6,6 +6,8 @@ package cmd
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -16,6 +18,7 @@ import (
 	"time"
 
 	"azureaieval/internal/pkg/dataset_api"
+	"azureaieval/internal/pkg/evalcore"
 	"azureaieval/internal/project"
 )
 
@@ -253,6 +256,9 @@ func (r *evalReconciler) EnsureEvaluator(
 	if _, err := os.Stat(localPath); err != nil {
 		return "", false, fmt.Errorf("evaluator source %q: %w", localPath, err)
 	}
+	if evalcore.IsCodeEvaluatorSource(localPath) {
+		return r.ensureCodeEvaluator(ctx, decl, localPath)
+	}
 
 	raw, err := os.ReadFile(localPath)
 	if err != nil {
@@ -303,6 +309,121 @@ func (r *evalReconciler) EnsureEvaluator(
 		return "", false, err
 	}
 	r.awaitEvaluatorReadable(ctx, decl.Name, created.Version)
+	_ = r.ec.setEnvValue(ctx, versionKey("evaluator", decl.Name), created.Version)
+	return created.Version, true, nil
+}
+
+// codeEvaluatorDigest fingerprints everything a published version depends on.
+//
+// The script alone is not enough: changing only metrics or the image tag
+// changes what gets published, and hashing just the source would leave that
+// edit undeployed with `azd up` reporting no change.
+func codeEvaluatorDigest(decl project.EvaluatorDecl, path string) (string, error) {
+	sum := sha256.New()
+
+	script, err := project.Fingerprint(path)
+	if err != nil {
+		return "", err
+	}
+	fmt.Fprintf(sum, "script:%s\nimage:%s\n", script, decl.ImageTag)
+
+	for _, settings := range []struct {
+		label string
+		path  string
+	}{
+		{"metrics", decl.Metrics},
+		{"data_schema", decl.DataSchema},
+		{"init_parameters", decl.InitParameters},
+	} {
+		if settings.path == "" {
+			continue
+		}
+		digest, err := project.Fingerprint(settings.path)
+		if err != nil {
+			return "", fmt.Errorf("evaluator %q %s: %w", decl.Name, settings.label, err)
+		}
+		fmt.Fprintf(sum, "%s:%s\n", settings.label, digest)
+	}
+
+	return hex.EncodeToString(sum.Sum(nil)), nil
+}
+
+// ensureCodeEvaluator publishes a Python script only when its content changed
+// since the last deploy.
+//
+// Every publish is a new immutable version, so without this a repeated
+// `azd up` would leave a trail of identical versions and force every eval
+// bound to the evaluator to be recreated along with them.
+func (r *evalReconciler) ensureCodeEvaluator(
+	ctx context.Context,
+	decl project.EvaluatorDecl,
+	path string,
+) (string, bool, error) {
+	// Validated before anything is published: a script with no top-level
+	// grade() is only rejected when a run executes, long after a version has
+	// been published and an eval bound to it.
+	script, err := evalcore.LoadCodeEvaluator(decl.Name, path)
+	if err != nil {
+		return "", false, err
+	}
+
+	digest, err := codeEvaluatorDigest(decl, path)
+	if err != nil {
+		return "", false, err
+	}
+
+	// Read once, and before deciding anything: the version it reports is both
+	// what tells a drifted evaluator from an edited one, and what keeps a
+	// publish from being answered with that same version and writing over it.
+	existing, readErr := r.ec.evalClient.GetEvaluatorRaw(
+		ctx, decl.Name, "", ProjectEndpointAPIVersion)
+	if readErr != nil {
+		existing = nil
+	}
+	remote := versionFromRaw(existing, "")
+
+	key := project.FingerprintKey("evaluator", decl.Name)
+	recordedVersion := r.ec.getEnvValue(ctx, versionKey("evaluator", decl.Name))
+	if r.ec.getEnvValue(ctx, key) == digest && recordedVersion != "" {
+		// Unchanged since the last deploy, but that alone does not make the
+		// recorded version safe to reuse: someone may have published a newer
+		// one outside the repo, and binding the eval to the older one would
+		// quietly evaluate with superseded code.
+		if err := checkEvaluatorDrift(decl.Name, recordedVersion, remote); err != nil {
+			return "", false, err
+		}
+		return recordedVersion, false, nil
+	}
+
+	// The script changed. Whether the project also moved on underneath is the
+	// same question a rubric asks, and publishing over a version somebody
+	// deliberately made would bury it just as thoroughly.
+	if recordedVersion != "" {
+		if err := checkEvaluatorDrift(decl.Name, recordedVersion, remote); err != nil {
+			return "", false, err
+		}
+	}
+
+	opts, err := codeEvaluatorOptions(codeEvaluatorFlags{
+		imageTag:   decl.ImageTag,
+		metrics:    decl.Metrics,
+		dataSchema: decl.DataSchema,
+		initParams: decl.InitParameters,
+	})
+	if err != nil {
+		return "", false, err
+	}
+
+	created, err := r.ec.evalClient.CreateCodeEvaluatorVersion(
+		ctx, script, opts, existing, ProjectEndpointAPIVersion,
+	)
+	if err != nil {
+		return "", false, err
+	}
+
+	r.awaitEvaluatorReadable(ctx, decl.Name, created.Version)
+
+	_ = r.ec.setEnvValue(ctx, key, digest)
 	_ = r.ec.setEnvValue(ctx, versionKey("evaluator", decl.Name), created.Version)
 	return created.Version, true, nil
 }

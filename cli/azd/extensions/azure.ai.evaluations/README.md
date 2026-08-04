@@ -27,30 +27,36 @@ services:
 ```
 
 ```yaml
-# evals/azure.yaml
-datasets:
-  - name: support-golden
-    source: ./datasets/support-golden.jsonl
+# evals/support-agent-smoke.yaml
+description: Quality gate for the support agent
+
+dataset:
+  name: support-golden
+  source: ./datasets/support-golden.jsonl
 
 evaluators:
+  - name: builtin.task_adherence
+    initialization_parameters:
+      deployment_name: gpt-4.1-nano
   - name: support-quality
     source: ./evaluators/support-quality.json
+    initialization_parameters:
+      deployment_name: gpt-4.1-nano
 
-evalGroups:
-  - name: support-quality
-    dataset: support-golden
-    evaluators:
-      - builtin.task_adherence
-      - support-quality
-    target:
-      type: agent
-      name: support-agent
-    options:
-      eval_model: gpt-4.1-nano
+target:
+  type: agent
+  name: support-agent
+
+options:
+  evaluation_level: turn
 ```
 
-`azd up` reconciles **datasets → evaluators → eval groups**, in that order,
-because a group references the versions the first two resolve to.
+The eval takes its name from the service entry that pulled the file in, so the
+body never repeats it. Every evaluator entry is a mapping, including one that
+carries nothing but a name.
+
+`azd up` reconciles **dataset → evaluators → eval**, in that order,
+because an eval references the versions the first two resolve to.
 
 Relative paths inside a `$ref`'d file resolve against **that file's**
 directory, so `./datasets/x.jsonl` above means `evals/datasets/x.jsonl`.
@@ -63,19 +69,24 @@ deploy. Evaluator definitions are compared against the service, but only on the
 keys you authored — the service adds `data_schema`, `init_parameters` and
 `metrics` of its own.
 
-Eval groups are immutable, so a change to a group's evaluators, target or
-options creates a new group and a new id. The id is cached in the azd
+Eval definitions are immutable, so a change to an eval's evaluators, target or
+options creates a new eval and a new id. The id is cached in the azd
 environment so repeat runs stay comparable.
 
 ## Commands
 
 | Group | Commands |
 |---|---|
-| `azd ai eval` | `init` · `generate` · `run` |
-| `azd ai eval dataset` | `create` · `list` · `show` · `update` · `delete` |
-| `azd ai eval evaluator` | `upload` · `list` · `show` · `update` · `delete` · `builtins` |
-| `azd ai eval run` | `start` · `list` · `show` · `cancel` |
-| `azd ai eval results` | `show` · `export` |
+| `azd ai eval` | `init` · `list` · `show` · `delete` |
+| `azd ai eval dataset` | `create` · `update` · `list` · `show` · `delete` · `generate` · `versions list` |
+| `azd ai eval evaluator` | `create` · `update` · `list` · `show` · `delete` · `generate` · `versions list` |
+| `azd ai eval run` | `start` · `list` · `show` · `cancel` · `delete` · `compare` |
+| `azd ai eval run output` | `list` · `show` · `export` |
+| `azd ai eval job` | `list` · `show` · `cancel` |
+| `azd ai eval schedule` | `set` · `list` · `show` · `delete` |
+
+There is no `eval create`: `azd up` owns eval creation, so two creation paths
+cannot drift.
 
 `create` and `update` both publish a new immutable version; the server
 auto-increments and nothing mutates in place.
@@ -86,7 +97,7 @@ usable from CI.
 ## Evaluators
 
 Built-ins need no declaration — reference them as `builtin.<name>` and list
-them with `azd ai eval evaluator builtins`.
+them with `azd ai eval evaluator list --builtin`.
 
 Evaluators do not share an input contract, so the CLI reads each one's
 published contract and shapes the request to match. An evaluator needing an

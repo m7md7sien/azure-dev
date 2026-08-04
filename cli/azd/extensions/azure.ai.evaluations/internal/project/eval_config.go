@@ -42,12 +42,23 @@ type DatasetDecl struct {
 // EvaluatorDecl declares a custom evaluator. Built-ins are referenced directly
 // from an eval and never declared here.
 //
-// Source names a `.json` file holding a rubric: a list of weighted scoring
-// dimensions.
+// Source decides which kind of evaluator this is, by extension: a `.py` file is
+// a single self-contained Python script and publishes a code evaluator, a
+// `.json` file holds a rubric. A code evaluator cannot name a folder — it runs
+// as a python grader, which is handed one script's source and cannot import a
+// helper module beside it.
 type EvaluatorDecl struct {
 	Name    string `yaml:"name"              json:"name"`
 	Source  string `yaml:"source,omitempty"  json:"source,omitempty"`
 	Version string `yaml:"version,omitempty" json:"version,omitempty"`
+
+	// Code evaluators only. The three schema fields name JSON files beside the
+	// script, resolved like Source, because they are edited as files rather
+	// than written inline in YAML.
+	ImageTag       string `yaml:"image_tag,omitempty"       json:"image_tag,omitempty"`
+	Metrics        string `yaml:"metrics,omitempty"         json:"metrics,omitempty"`
+	DataSchema     string `yaml:"data_schema,omitempty"     json:"data_schema,omitempty"`
+	InitParameters string `yaml:"init_parameters,omitempty" json:"init_parameters,omitempty"`
 }
 
 // Eval is a run definition: evaluators plus options, bound to a dataset.
@@ -68,6 +79,11 @@ type Target struct {
 }
 
 const TargetTypeAgent = "agent"
+
+// TargetTypeModel evaluates a model deployment directly, with no agent in
+// front of it. A model answers as plain text, so an eval targeting one binds
+// its response differently from one targeting an agent.
+const TargetTypeModel = "model"
 
 // Options are run settings carried on the eval.
 //
@@ -204,9 +220,11 @@ func (c *EvalConfig) Validate() error {
 		}
 	}
 
-	if c.Target != nil && c.Target.Type != "" && c.Target.Type != TargetTypeAgent {
+	if c.Target != nil && c.Target.Type != "" &&
+		c.Target.Type != TargetTypeAgent && c.Target.Type != TargetTypeModel {
 		return fmt.Errorf(
-			"target.type %q is not supported; use %q", c.Target.Type, TargetTypeAgent)
+			"target.type %q is not supported; use %q or %q",
+			c.Target.Type, TargetTypeAgent, TargetTypeModel)
 	}
 	if c.Options != nil {
 		switch c.Options.EvaluationLevel {

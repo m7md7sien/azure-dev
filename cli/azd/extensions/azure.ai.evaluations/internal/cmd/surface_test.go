@@ -83,6 +83,18 @@ func TestCommandTreeMatchesTheSpec(t *testing.T) {
 		"show",
 	}
 
+	// M2 adds scheduling and comparison on top of the M1 surface. Listed
+	// separately so the M1 list stays byte-identical across the two branches
+	// and a merge cannot quietly drop or duplicate an entry.
+	want = append(want,
+		"run compare",
+		"schedule",
+		"schedule delete",
+		"schedule list",
+		"schedule set",
+		"schedule show",
+	)
+
 	var got []string
 	walk(t, NewRootCommand(), nil, func(path string, _ *cobra.Command) {
 		got = append(got, path)
@@ -100,26 +112,19 @@ func TestFlagVocabularyIsShared(t *testing.T) {
 	// Meaning → the one spelling for it, from the spec's vocabulary table.
 	// A command that means one of these must use exactly this name, and the
 	// near-misses are listed so a rename back is caught rather than accepted.
+	//
+	// The M2 entries are the surfaces this branch has not built yet. `--cron`
+	// is absent from the list because scheduling is what M2 adds.
 	forbidden := map[string]string{
-		"--out-file":     "--output-file",
-		"--out-dir":      "--output-dir",
-		"--file":         "--from-file",
-		"--rubric":       "--from-file",
-		"--judge-model":  "--generation-model, declared per evaluator instead",
-		"--from-traces":  "deferred to M2",
-		"--response-id":  "deferred to M2",
-		"--no-target":    "deferred to M2",
-		"--out":          "--output-file",
-		"--dir":          "--output-dir",
-		"--baseline":     "deferred to M2",
-		"--cron":         "deferred to M2",
-		"--folder":       "deferred to M2",
-		"--init-params":  "deferred to M2",
-		"--data-schema":  "deferred to M2",
-		"--metrics":      "deferred to M2",
-		"--trace-window": "deferred to M2",
-		"--max-traces":   "deferred to M2",
-		"--max-turns":    "deferred to M2",
+		"--out-file":    "--output-file",
+		"--out-dir":     "--output-dir",
+		"--file":        "--from-file",
+		"--rubric":      "--from-file",
+		"--judge-model": "--generation-model, declared per evaluator instead",
+		"--out":         "--output-file",
+		"--dir":         "--output-dir",
+		"--no-target":   "nothing: an eval with no target is declared by omitting target:",
+		"--folder":      "--from-file, which takes the .py script itself",
 	}
 
 	walk(t, NewRootCommand(), nil, func(path string, cmd *cobra.Command) {

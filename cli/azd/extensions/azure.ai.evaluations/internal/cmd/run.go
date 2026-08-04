@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -65,6 +66,7 @@ func newRunCommand() *cobra.Command {
 	addRunSubcommands(cmd)
 	cmd.AddCommand(buildRunCommand(
 		"start", "Start a run, creating the eval if it does not exist yet."))
+	cmd.AddCommand(newRunCompareCommand())
 	return cmd
 }
 
@@ -76,6 +78,11 @@ func buildRunCommand(use, short string) *cobra.Command {
 		runName     string
 		level       string
 		maxSamples  int
+		fromTraces  bool
+		traceWindow string
+		maxTraces   int
+		responseIDs []string
+		maxTurns    int
 		wait        bool
 		failOn      string
 		endpointFlg string
@@ -91,6 +98,19 @@ func buildRunCommand(use, short string) *cobra.Command {
 			// Parsed before any network work, so a malformed threshold costs
 			// nothing to find out about.
 			threshold, err := parseGate(failOn)
+			if err != nil {
+				return err
+			}
+
+			// Same reason. A window is only read once the eval and its last run
+			// have been resolved, and resolving those is what fails first when
+			// the eval is unknown — so a typo in the window would be reported as
+			// a missing eval.
+			lookbackHours, err := parseWindowHours(traceWindow)
+			if err != nil {
+				return err
+			}
+			traceCap, err := resolveMaxTraces(maxTraces)
 			if err != nil {
 				return err
 			}
@@ -132,9 +152,13 @@ func buildRunCommand(use, short string) *cobra.Command {
 			}
 
 			// With --eval-id there is no config to read, so the pairing of
-			// target and dataset comes from the group's previous run.
+			// target and dataset comes from the eval's previous run.
 			var dataSource *eval_api.EvalRunDataSource
 			switch {
+			case len(responseIDs) > 0:
+				dataSource = eval_api.NewResponsesDataSource(responseIDs, maxTurns)
+			case fromTraces:
+				dataSource, err = buildTracesDataSource(ctx, ec, group, evalID, lookbackHours, traceCap)
 			case group == nil:
 				dataSource, err = ec.reuseDataSourceFromLastRun(ctx, evalID)
 			default:
@@ -222,6 +246,17 @@ func buildRunCommand(use, short string) *cobra.Command {
 		"Scoring granularity: turn or conversation. Defaults to the service default (turn).")
 	cmd.Flags().IntVar(&maxSamples, "max-samples", 0,
 		"Cap the rows sent from the dataset.")
+	cmd.Flags().BoolVar(&fromTraces, "from-traces", false,
+		"Evaluate the agent's recorded traces instead of the dataset.")
+	cmd.Flags().StringVar(&traceWindow, "trace-window", "",
+		"How far back to read traces, for example 7d. Defaults to the service's window.")
+	cmd.Flags().IntVar(&maxTraces, "max-traces", 0,
+		fmt.Sprintf("Cap the traces evaluated (default %d).", defaultMaxTraces))
+	cmd.Flags().StringSliceVar(&responseIDs, "response-id", nil,
+		"Evaluate stored responses by id instead of the dataset; repeatable.")
+	cmd.Flags().IntVar(&maxTurns, "max-turns", 0,
+		"Turns of chat history to pull back per response. Defaults to the service's limit.")
+	cmd.MarkFlagsMutuallyExclusive("from-traces", "response-id")
 	cmd.Flags().BoolVar(&wait, "wait", true, "Block until the run reaches a terminal state.")
 	addFailOnFlag(cmd, &failOn)
 	// The spec documents --no-wait, and cobra does not derive it from a bool.
@@ -391,6 +426,88 @@ func (ec *evalContext) reuseDataSourceFromLastRun(
 	return list.Data[0].DataSource, nil
 }
 
+// buildTracesDataSource evaluates what the agent has already done, rather than
+// asking it fresh questions from a dataset.
+//
+// The service reads the traces from Application Insights, so the agent has to
+// be emitting gen_ai.input.messages / gen_ai.output.messages for anything to be
+// found; when it is not, the run fails with the service saying so.
+func buildTracesDataSource(
+	ctx context.Context,
+	ec *evalContext,
+	group *project.Eval,
+	evalID string,
+	lookbackHours int,
+	maxTraces int,
+) (*eval_api.EvalRunDataSource, error) {
+	agent := ""
+	switch {
+	case group != nil && group.Target != nil:
+		agent = group.Target.Name
+	default:
+		// With --eval-id there is no config, so the agent comes from whatever
+		// the eval ran against last.
+		last, err := ec.reuseDataSourceFromLastRun(ctx, evalID)
+		if err != nil {
+			return nil, err
+		}
+		if last != nil && last.Target != nil {
+			agent = last.Target.Name
+		}
+	}
+	if agent == "" {
+		return nil, fmt.Errorf(
+			"--from-traces needs to know whose traces to read, and the eval does not " +
+				"name an agent. Declare target.type: agent on the eval")
+	}
+
+	return eval_api.NewTracesDataSource(agent, lookbackHours, time.Time{}, maxTraces), nil
+}
+
+// defaultMaxTraces bounds a trace-backed run when the caller does not.
+//
+// A window selects traces by time, so nothing in the request says how many
+// that is: a busy agent over 7d can be thousands of conversations, and at
+// roughly 40s a sample that is a run nobody meant to start. An unset
+// --max-traces sends this rather than nothing. It is a default, not a ceiling:
+// a caller who wants the whole week only has to say so.
+const defaultMaxTraces = 100
+
+func resolveMaxTraces(maxTraces int) (int, error) {
+	switch {
+	case maxTraces < 0:
+		return 0, fmt.Errorf("--max-traces cannot be negative")
+	case maxTraces == 0:
+		return defaultMaxTraces, nil
+	default:
+		return maxTraces, nil
+	}
+}
+
+// parseWindowHours reads a window such as "30d" or a bare day count and
+// returns it in hours, which is what the trace data source takes.
+//
+// A window it cannot read is an error rather than a zero: zero means "no
+// lookback", the service accepts it, finds no traces, and the run succeeds
+// having evaluated nothing. A typo would cost a run and report success.
+func parseWindowHours(window string) (int, error) {
+	w := strings.TrimSpace(strings.ToLower(window))
+	if w == "" {
+		return 0, nil
+	}
+	days, err := strconv.Atoi(strings.TrimSuffix(w, "d"))
+	if err != nil {
+		return 0, fmt.Errorf(
+			"--trace-window %q is not a number of days: write it as `7d` or `7`", window)
+	}
+	if days <= 0 {
+		return 0, fmt.Errorf(
+			"--trace-window %q looks back over no time at all, so no trace can "+
+				"fall inside it: give a positive number of days", window)
+	}
+	return days * 24, nil
+}
+
 // buildRunDataSource binds the dataset to the run. The eval carries no
 // dataset today, so it is supplied here.
 func (ec *evalContext) buildRunDataSource(
@@ -402,11 +519,18 @@ func (ec *evalContext) buildRunDataSource(
 	if group == nil {
 		return nil, fmt.Errorf("no eval to run")
 	}
-	if group.Target == nil || group.Target.Name == "" {
-		return nil, fmt.Errorf("eval %q does not name a target agent", group.Name)
+	// An eval with no target scores a dataset that already holds the exchange,
+	// so there is nothing to invoke. That is how recorded conversations are
+	// evaluated.
+	var ds *eval_api.EvalRunDataSource
+	switch {
+	case group.Target == nil || group.Target.Name == "":
+		ds = eval_api.NewDatasetOnlyDataSource()
+	case group.Target.Type == project.TargetTypeModel:
+		ds = eval_api.NewModelTargetDataSource(group.Target.Name)
+	default:
+		ds = eval_api.NewAgentTargetDataSource(group.Target.Name, nil)
 	}
-
-	ds := eval_api.NewAgentTargetDataSource(group.Target.Name, nil)
 
 	if group.Dataset == "" {
 		return nil, fmt.Errorf("eval %q does not reference a dataset", group.Name)

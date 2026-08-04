@@ -110,6 +110,30 @@ func liveEvalClient(t *testing.T) (*eval_api.EvalClient, string) {
 	return eval_api.NewEvalClient(endpoint, retryingCredential{inner: cred}), judge
 }
 
+// deleteEvaluatorOnCleanup removes every version an evaluator ended up with.
+//
+// Naming the versions the test published is not enough. A publish that hits
+// the service's version race is retried, and a retry can leave a version
+// behind that the caller never saw a number for. Listing is the only way to
+// know what is actually there.
+func deleteEvaluatorOnCleanup(t *testing.T, client *eval_api.EvalClient, name string) {
+	t.Helper()
+	t.Cleanup(func() {
+		ctx := context.Background()
+		list, err := client.ListEvaluatorVersions(ctx, name, ProjectEndpointAPIVersion)
+		if err != nil || list == nil {
+			t.Logf("could not list versions of evaluator %q to delete them: %v", name, err)
+			return
+		}
+		for _, entry := range list.Value {
+			if err := client.DeleteEvaluatorVersion(
+				ctx, name, entry.Version, ProjectEndpointAPIVersion); err != nil {
+				t.Logf("could not delete evaluator %q version %s: %v", name, entry.Version, err)
+			}
+		}
+	})
+}
+
 // TestLiveBuildAcceptedForEveryBuiltin walks every built-in the project
 // exposes, builds a group with the shipping builder, and posts it.
 //

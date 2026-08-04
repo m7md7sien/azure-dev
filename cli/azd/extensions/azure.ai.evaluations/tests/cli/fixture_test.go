@@ -102,6 +102,31 @@ func runQuietly(args ...string) {
 	_ = exec.Command(binaryPath, full...).Run()
 }
 
+// deferDeleteEvaluator removes every version an evaluator ended up with.
+//
+// Going through the client rather than the binary is deliberate. `evaluator
+// delete` takes one version at a time and requires --version, so tearing down
+// through it means knowing what was published — and a test that calls `update`
+// leaves two versions, while a publish that hit the service's version race can
+// leave one the test never saw a number for. Listing is the only account of
+// what is actually there.
+func deferDeleteEvaluator(name string) {
+	deferTeardown(func() {
+		client, err := liveClient()
+		if err != nil {
+			return
+		}
+		ctx := context.Background()
+		list, err := client.ListEvaluatorVersions(ctx, name, fixtureAPIVersion)
+		if err != nil || list == nil {
+			return
+		}
+		for _, entry := range list.Value {
+			_ = client.DeleteEvaluatorVersion(ctx, name, entry.Version, fixtureAPIVersion)
+		}
+	})
+}
+
 var (
 	credOnce sync.Once
 	cred     *azidentity.AzureDeveloperCLICredential
@@ -356,6 +381,8 @@ func startFixtureRun(
 	var run *eval_api.OpenAIEvalRun
 	if err := retryCredentialFlake(func() error {
 		var err error
+		// No teardown of its own: a run is removed with the eval it belongs to,
+		// and createFixtureEval has already registered that.
 		run, err = client.CreateOpenAIEvalRun(ctx, evalID, &eval_api.CreateOpenAIEvalRunRequest{
 			Name:       uniqueName("azdcli-" + label),
 			DataSource: ds,

@@ -112,6 +112,21 @@ func uniqueName(prefix string) string {
 	return fmt.Sprintf("%s-%d", prefix, time.Now().UTC().Unix())
 }
 
+// deleteEvalOnCleanup removes an eval when the test that created it ends.
+//
+// Runs belong to their eval, so removing it takes its runs with it and there
+// is nothing separate to tidy. Skipping this is not free: every leftover eval
+// stays in the project's listing forever, and the listings these tests read
+// back are what several of them assert on.
+func deleteEvalOnCleanup(t *testing.T, env *liveEnv, evalID string) {
+	t.Helper()
+	t.Cleanup(func() {
+		if err := env.evalClient.DeleteOpenAIEval(context.Background(), evalID); err != nil {
+			t.Logf("could not delete eval %s: %v", evalID, err)
+		}
+	})
+}
+
 // pickQualityEvaluator selects a built-in whose required inputs match the
 // agent-target data mapping this extension sends.
 //
@@ -258,6 +273,7 @@ func TestLiveEvalLifecycle(t *testing.T) {
 	group, err := env.evalClient.CreateOpenAIEval(ctx, req)
 	require.NoError(t, err, "creating the eval")
 	require.NotEmpty(t, group.ID, "the service assigns the id; name is not unique")
+	deleteEvalOnCleanup(t, env, group.ID)
 	t.Logf("created eval %s (name %q)", group.ID, group.Name)
 
 	fetched, err := env.evalClient.GetOpenAIEval(ctx, group.ID)
@@ -361,6 +377,7 @@ func TestLiveRun(t *testing.T) {
 		}},
 	})
 	require.NoError(t, err, "creating the eval for the run")
+	deleteEvalOnCleanup(t, env, group.ID)
 
 	ds := eval_api.NewAgentTargetDataSource(agentName, nil)
 	ds.SetFileContent([]map[string]any{

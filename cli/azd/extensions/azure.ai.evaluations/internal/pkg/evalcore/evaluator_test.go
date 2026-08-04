@@ -11,12 +11,12 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
-// The service-target provider receives the config as JSON, not YAML, so the
-// mixed string-or-mapping form has to decode through both paths. Supporting
-// only YAML made `azd deploy` fail on a config the CLI itself writes.
-func TestEvaluatorListDecodesMixedEntriesFromJSON(t *testing.T) {
+// The service-target provider receives the config as JSON, not YAML, so every
+// entry has to decode through both paths. Supporting only YAML made
+// `azd deploy` fail on a config the CLI itself writes.
+func TestEvaluatorListDecodesEntriesFromJSON(t *testing.T) {
 	const payload = `[
-		"builtin.task_adherence",
+		{"name": "builtin.task_adherence"},
 		{"name": "support-quality", "threshold": 4.0},
 		{"name": "pinned", "version": "3"}
 	]`
@@ -36,11 +36,25 @@ func TestEvaluatorListDecodesMixedEntriesFromJSON(t *testing.T) {
 	require.Equal(t, "3", list[2].Version)
 }
 
+// A bare string is the form the config used to accept, so it has to be refused
+// with the remedy rather than a decoder's type error — through both paths,
+// because a config that reaches `azd up` as JSON would otherwise report a
+// different problem than the one the author can act on.
+func TestEvaluatorListRejectsTheBareStringForm(t *testing.T) {
+	var fromJSON EvaluatorList
+	err := json.Unmarshal([]byte(`["builtin.task_adherence"]`), &fromJSON)
+	require.ErrorContains(t, err, "- name: builtin.task_adherence")
+
+	var fromYAML EvaluatorList
+	err = yaml.Unmarshal([]byte("- builtin.task_adherence\n"), &fromYAML)
+	require.ErrorContains(t, err, "- name: builtin.task_adherence")
+}
+
 // The JSON and YAML decoders must agree, otherwise a config behaves one way
 // through the CLI and another through `azd up`.
 func TestEvaluatorListJSONMatchesYAML(t *testing.T) {
 	const doc = `
-- builtin.task_adherence
+- name: builtin.task_adherence
 - { name: support-quality, threshold: 4.0 }
 `
 	var fromYAML EvaluatorList

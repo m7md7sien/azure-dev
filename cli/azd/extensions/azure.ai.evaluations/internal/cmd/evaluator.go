@@ -9,6 +9,7 @@ import (
 	"os"
 
 	"azureaieval/internal/pkg/eval_api"
+	"azureaieval/internal/pkg/evalcore"
 
 	"github.com/spf13/cobra"
 )
@@ -51,18 +52,30 @@ func newEvaluatorWriteCommand(verb, short string) *cobra.Command {
 	var (
 		fromFile    string
 		endpointFlg string
+		codeFlags   codeEvaluatorFlags
 	)
 
 	cmd := &cobra.Command{
 		Use:   verb + " <name>",
 		Short: short,
 		Long: short + "\n\n" +
-			"An evaluator is a rubric: a JSON file of weighted scoring dimensions.",
+			"An evaluator is either a rubric — a JSON file of weighted scoring " +
+			"dimensions — or code: a single Python script declaring " +
+			"grade(sample, item). --from-file takes either, and the extension " +
+			"decides which.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 			if fromFile == "" {
 				return requireFlag("from-file")
+			}
+			if err := validateCodeEvaluatorFlags(fromFile, codeFlags); err != nil {
+				return err
+			}
+
+			if evalcore.IsCodeEvaluatorSource(fromFile) {
+				return runEvaluatorWriteFromScript(
+					cmd, verb, name, fromFile, endpointFlg, codeFlags)
 			}
 
 			raw, err := os.ReadFile(fromFile)
@@ -118,9 +131,154 @@ func newEvaluatorWriteCommand(verb, short string) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&fromFile, "from-file", "", "Path to the evaluator JSON file.")
+	cmd.Flags().StringVar(&fromFile, "from-file", "",
+		"Path to the evaluator's source: a .json rubric or a .py script.")
 	cmd.Flags().StringVar(&endpointFlg, "project-endpoint", "", "Foundry project endpoint.")
+	cmd.Flags().StringVar(&codeFlags.imageTag, "image-tag", "",
+		"Image the script runs in. Code evaluators only.")
+	cmd.Flags().StringVar(&codeFlags.initParams, "init-params", "",
+		"Path to a JSON object of parameters the evaluator is constructed with. "+
+			"Code evaluators only.")
+	cmd.Flags().StringVar(&codeFlags.dataSchema, "data-schema", "",
+		"Path to a JSON object describing the inputs the evaluator reads. "+
+			"Code evaluators only.")
+	cmd.Flags().StringVar(&codeFlags.metrics, "metrics", "",
+		"Path to a JSON object describing the metrics the evaluator produces. "+
+			"Code evaluators only.")
 	return cmd
+}
+
+// codeEvaluatorFlags are the four that only mean something for a script.
+type codeEvaluatorFlags struct {
+	imageTag   string
+	initParams string
+	dataSchema string
+	metrics    string
+}
+
+// validateCodeEvaluatorFlags refuses the code-only flags on a rubric.
+//
+// A rubric's schemas are fixed by the service and a rubric runs no code, so
+// these would be accepted and then quietly dropped — the worst kind of no-op,
+// because the author believes the evaluator was published carrying them.
+func validateCodeEvaluatorFlags(fromFile string, flags codeEvaluatorFlags) error {
+	if evalcore.IsCodeEvaluatorSource(fromFile) {
+		return nil
+	}
+	for _, named := range []struct {
+		flag  string
+		value string
+	}{
+		{"image-tag", flags.imageTag},
+		{"init-params", flags.initParams},
+		{"data-schema", flags.dataSchema},
+		{"metrics", flags.metrics},
+	} {
+		if named.value != "" {
+			return fmt.Errorf(
+				"--%s applies to a code evaluator and needs a .py --from-file; "+
+					"a rubric runs no code and its schemas are set by the service",
+				named.flag)
+		}
+	}
+	return nil
+}
+
+// runEvaluatorWriteFromScript validates the script, then publishes it.
+func runEvaluatorWriteFromScript(
+	cmd *cobra.Command,
+	verb, name, file, endpoint string,
+	flags codeEvaluatorFlags,
+) error {
+	script, err := evalcore.LoadCodeEvaluator(name, file)
+	if err != nil {
+		return err
+	}
+
+	opts, err := codeEvaluatorOptions(flags)
+	if err != nil {
+		return err
+	}
+
+	ctx := cmd.Context()
+	ec, err := newEvalContext(ctx, endpoint)
+	if err != nil {
+		return err
+	}
+	defer ec.Close()
+
+	existing, readErr := ec.evalClient.GetEvaluatorRaw(ctx, name, "", ProjectEndpointAPIVersion)
+	if readErr != nil && !eval_api.IsNotFound(readErr) {
+		return fmt.Errorf("checking whether evaluator %q exists: %w", name, readErr)
+	}
+	if err := checkAssetExistence(verb, "evaluator", name, readErr == nil); err != nil {
+		return err
+	}
+	if readErr != nil {
+		existing = nil
+	}
+
+	created, err := ec.evalClient.CreateCodeEvaluatorVersion(
+		ctx, script, opts, existing, ProjectEndpointAPIVersion,
+	)
+	if err != nil {
+		return fmt.Errorf("publishing evaluator %q: %w", name, err)
+	}
+
+	if isJSON(cmd) {
+		return emitJSON(cmd.OutOrStdout(), created)
+	}
+	fmt.Fprintf(cmd.OutOrStdout(),
+		"Registered evaluator %s version %s from %s\n",
+		created.Name, created.Version, file)
+	return nil
+}
+
+// codeEvaluatorOptions resolves the evaluator's schemas from the flags.
+//
+// They are not read from the script and not read from a descriptor beside it:
+// the grader is handed one file of source, so anything the service needs that
+// is not Python has to be named on the command line or carried in the eval
+// config.
+func codeEvaluatorOptions(flags codeEvaluatorFlags) (eval_api.CodeEvaluatorOptions, error) {
+	opts := eval_api.CodeEvaluatorOptions{ImageTag: flags.imageTag}
+
+	for _, declared := range []struct {
+		path  string
+		flag  string
+		field *json.RawMessage
+	}{
+		{flags.initParams, "init-params", &opts.InitParameters},
+		{flags.dataSchema, "data-schema", &opts.DataSchema},
+		{flags.metrics, "metrics", &opts.Metrics},
+	} {
+		if declared.path == "" {
+			continue
+		}
+		raw, err := readJSONObject(declared.path)
+		if err != nil {
+			return opts, fmt.Errorf("--%s %q: %w", declared.flag, declared.path, err)
+		}
+		*declared.field = raw
+	}
+
+	return opts, nil
+}
+
+// readJSONObject reads a file that must hold a JSON object.
+//
+// Parsing here rather than letting the service reject it keeps a typo from
+// costing an upload and a published version, and names the file that is wrong.
+func readJSONObject(path string) (json.RawMessage, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return nil, fmt.Errorf("not a JSON object: %w", err)
+	}
+	return json.RawMessage(raw), nil
 }
 
 // checkAssetExistence enforces the one difference between create and update.

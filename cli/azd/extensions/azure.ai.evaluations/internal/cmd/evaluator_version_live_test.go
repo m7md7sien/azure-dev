@@ -51,12 +51,7 @@ func TestLiveEvaluatorUpdateAlwaysPublishesANewVersion(t *testing.T) {
 	first, err := client.CreateEvaluatorVersion(ctx, name, rubric(1), nil, ProjectEndpointAPIVersion)
 	require.NoError(t, err)
 	require.NotEmpty(t, first.Version)
-	t.Cleanup(func() {
-		for _, v := range []string{first.Version, "1", "2"} {
-			_ = client.DeleteEvaluatorVersion(
-				context.Background(), name, v, ProjectEndpointAPIVersion)
-		}
-	})
+	deleteEvaluatorOnCleanup(t, client, name)
 
 	// Deliberately immediate, and passing what the caller holds rather than
 	// re-reading: this is the window the guard exists for, and a test that

@@ -150,7 +150,7 @@ dataset:
 // repeated on every invocation.
 func TestResolvePlan_FallsBackToTheEvalTarget(t *testing.T) {
 	f := evalsDir(t, "generationModel: gpt-4o\n", map[string]string{
-		"support-agent-smoke.yaml": "evaluators: [builtin.relevance]\n" +
+		"support-agent-smoke.yaml": "evaluators: [{name: builtin.relevance}]\n" +
 			"target:\n  type: agent\n  name: support-agent\n",
 	})
 

@@ -71,7 +71,7 @@ func TestEvalConfigFromServiceReadsInlineConfig(t *testing.T) {
 		Name: "support-agent-smoke",
 		AdditionalProperties: propsFrom(t, map[string]any{
 			"dataset":    map[string]any{"name": "golden", "source": "./datasets/golden.jsonl"},
-			"evaluators": []any{"builtin.task_adherence"},
+			"evaluators": []any{map[string]any{"name": "builtin.task_adherence"}},
 			"target":     map[string]any{"type": "agent", "name": "my-agent"},
 		}),
 	}

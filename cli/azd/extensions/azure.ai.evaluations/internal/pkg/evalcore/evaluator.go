@@ -16,18 +16,24 @@ import (
 // stripped before the name is sent as testing_criteria[].evaluator_name.
 const BuiltinPrefix = "builtin."
 
-// EvaluatorRef references an evaluator from an eval. It accepts either a
-// bare string or a mapping carrying the rest of the declaration:
+// EvaluatorRef references an evaluator from an eval. Every entry is a mapping,
+// even one carrying nothing but a name:
 //
 //	evaluators:
-//	  - builtin.task_adherence
-//	  - name: support-quality
-//	    source: ./evaluators/support-quality.json
+//	  - name: builtin.task_adherence
+//	  - name: support-agent-quality
+//	    source: ./evaluators/support-agent-quality.json
 //	    initialization_parameters:
 //	      deployment_name: gpt-5.6-luna
 //
 // A built-in needs nothing but its name. One with a Source is the project's
 // own, and is published before the eval that references it is created.
+//
+// A bare string is deliberately not accepted. Every other collection in the
+// config is a list of named maps, so a shorthand here would be the one
+// exception a reader has to learn; most references carry parameters anyway;
+// and a bare string would have to mean evaluator_name, which reads as the
+// criterion's own name — a different and also required field.
 type EvaluatorRef struct {
 	Name    string `yaml:"name" json:"name"`
 	Version string `yaml:"version,omitempty" json:"version,omitempty"`
@@ -52,9 +58,13 @@ func (e EvaluatorRef) APIName() string {
 	return strings.TrimPrefix(e.Name, BuiltinPrefix)
 }
 
-// EvaluatorList is a sequence of EvaluatorRef supporting mixed string and
-// mapping entries.
+// EvaluatorList is a sequence of EvaluatorRef. Entries are mappings; the
+// decoders name the remedy rather than accepting a bare string quietly,
+// because a config written the old way is otherwise silently reinterpreted.
 type EvaluatorList []EvaluatorRef
+
+const bareEvaluatorRemedy = "an evaluator entry is a mapping, not a bare string: " +
+	"write `- name: %s`"
 
 func (el *EvaluatorList) UnmarshalYAML(value *yaml.Node) error {
 	if value.Kind != yaml.SequenceNode {
@@ -69,7 +79,7 @@ func (el *EvaluatorList) UnmarshalYAML(value *yaml.Node) error {
 			if err := node.Decode(&name); err != nil {
 				return fmt.Errorf("decoding evaluator name: %w", err)
 			}
-			result = append(result, EvaluatorRef{Name: name})
+			return fmt.Errorf(bareEvaluatorRemedy, name)
 		case yaml.MappingNode:
 			var ref EvaluatorRef
 			if err := node.Decode(&ref); err != nil {
@@ -80,7 +90,7 @@ func (el *EvaluatorList) UnmarshalYAML(value *yaml.Node) error {
 			}
 			result = append(result, ref)
 		default:
-			return fmt.Errorf("evaluator entry must be a string or a mapping, got %v", node.Kind)
+			return fmt.Errorf("evaluator entry must be a mapping, got %v", node.Kind)
 		}
 	}
 
@@ -88,26 +98,22 @@ func (el *EvaluatorList) UnmarshalYAML(value *yaml.Node) error {
 	return nil
 }
 
-// MarshalYAML emits the compact string form when an entry carries nothing but a
-// name, so round-tripping a hand-written config does not rewrite it.
+// MarshalYAML is the default sequence encoding. It exists only so the compact
+// form cannot creep back in through the encoder.
 func (el EvaluatorList) MarshalYAML() (any, error) {
 	out := make([]any, 0, len(el))
 	for _, ref := range el {
-		if ref.isBareName() {
-			out = append(out, ref.Name)
-			continue
-		}
 		out = append(out, ref)
 	}
 	return out, nil
 }
 
-// UnmarshalJSON accepts the same mixed string-or-mapping form as the YAML
-// decoder.
+// UnmarshalJSON accepts the same mapping-only form as the YAML decoder.
 //
 // This matters for the service-target provider: azd hands the service entry to
 // the extension as JSON, so a config written as `- builtin.task_adherence`
-// arrives as a bare string and would otherwise fail to decode.
+// arrives here as a bare string and has to be refused with the same remedy the
+// YAML decoder gives, not a decoder's own type error.
 func (el *EvaluatorList) UnmarshalJSON(data []byte) error {
 	var entries []json.RawMessage
 	if err := json.Unmarshal(data, &entries); err != nil {
@@ -122,8 +128,7 @@ func (el *EvaluatorList) UnmarshalJSON(data []byte) error {
 			if err := json.Unmarshal(trimmed, &name); err != nil {
 				return fmt.Errorf("decoding evaluator name: %w", err)
 			}
-			result = append(result, EvaluatorRef{Name: name})
-			continue
+			return fmt.Errorf(bareEvaluatorRemedy, name)
 		}
 
 		var ref EvaluatorRef
@@ -140,7 +145,7 @@ func (el *EvaluatorList) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// MarshalJSON mirrors MarshalYAML's compact form.
+// MarshalJSON mirrors MarshalYAML.
 //
 // Everything the reference carries has to survive the round trip, including
 // the source and the initialization parameters: the eval fingerprint is taken
@@ -152,18 +157,7 @@ func (el EvaluatorList) MarshalJSON() ([]byte, error) {
 
 	out := make([]any, 0, len(el))
 	for _, r := range el {
-		if r.isBareName() {
-			out = append(out, r.Name)
-			continue
-		}
 		out = append(out, ref(r))
 	}
 	return json.Marshal(out)
-}
-
-// isBareName reports whether the reference carries nothing but its name, in
-// which case both encoders emit the compact string form.
-func (e EvaluatorRef) isBareName() bool {
-	return e.Threshold == nil && e.Version == "" && e.Source == "" &&
-		len(e.InitializationParameters) == 0
 }
