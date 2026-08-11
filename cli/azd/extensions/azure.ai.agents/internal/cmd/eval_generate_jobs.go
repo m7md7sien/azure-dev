@@ -15,6 +15,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"azureaiagent/internal/pkg/agents/eval_api"
@@ -90,6 +91,40 @@ func submitDatasetGeneration(
 		resolveEvalName(flags), flags.evalModel, flags.maxSamples, sources,
 	)
 	return resolved.evalClient.CreateDataGenerationJob(ctx, request, DataGenerationAPIVersion)
+}
+
+// resubmitDatasetGenerationWithoutAgent retries generation from the prompt alone.
+//
+// Returns nil when there is no prompt to fall back to, so the caller keeps the
+// original failure rather than reporting a second, emptier one.
+func resubmitDatasetGenerationWithoutAgent(
+	ctx context.Context,
+	resolved *evalResolvedContext,
+	flags *evalGenerateFlags,
+) (*eval_api.GenerationJob, error) {
+	prompt := resolvedInstruction(flags)
+	sources := eval_api.WithoutAgentSource(eval_api.BuildGenerationSources(
+		string(resolved.agentKind), resolved.agentName, resolved.version, prompt, nil,
+	))
+	if !eval_api.HasPromptSource(sources) {
+		return nil, nil
+	}
+	request := eval_api.NewDataGenerationJobRequest(
+		resolveEvalName(flags), flags.evalModel, flags.maxSamples, sources,
+	)
+	return resolved.evalClient.CreateDataGenerationJob(ctx, request, DataGenerationAPIVersion)
+}
+
+// isAgentSeededGenerationFailure reports the server-side failure that seeding
+// generation from an agent currently produces for every agent, within seconds,
+// while the same request without the agent source runs normally.
+func isAgentSeededGenerationFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := err.Error()
+	return strings.Contains(text, "DataGenerationJobSystemError") ||
+		strings.Contains(text, "Something went wrong during data generation")
 }
 
 // submitEvaluatorGeneration submits an evaluator generation job and returns the created job or an error.

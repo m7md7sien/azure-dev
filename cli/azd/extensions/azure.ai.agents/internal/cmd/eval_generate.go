@@ -230,6 +230,25 @@ func runEvalGenerate(ctx context.Context, flags *evalGenerateFlags, noPrompt boo
 	}
 
 	pollRes, err := pollAndFinalizeJobs(ctx, resolved, evalCfg, state, extraEvals)
+	if err != nil && isAgentSeededGenerationFailure(err) {
+		// Agent-seeded generation fails server-side for every agent, while the
+		// same request carrying only the prompt succeeds. Failing here would
+		// block generation entirely on a defect the user cannot do anything
+		// about, so retry without the agent and say so. The evaluator job is
+		// already terminal by now, so only the dataset is submitted again.
+		retry, retryErr := resubmitDatasetGenerationWithoutAgent(ctx, resolved, flags)
+		if retryErr != nil {
+			return retryErr
+		}
+		if retry != nil {
+			fmt.Fprintf(os.Stderr,
+				"warning: generating from agent %q failed in the service; "+
+					"retrying from the instruction alone.\n", resolved.agentName)
+			state.DatasetGenOpID = retry.OperationID()
+			state.DatasetGenStatus = retry.NormalizedStatus()
+			pollRes, err = pollAndFinalizeJobs(ctx, resolved, evalCfg, state, extraEvals)
+		}
+	}
 	if err != nil {
 		if _, ok := errors.AsType[*initTimeoutError](err); ok {
 			return writeTimedOutEvalGenerate(ctx, resolved, configPath, evalCfg, state)

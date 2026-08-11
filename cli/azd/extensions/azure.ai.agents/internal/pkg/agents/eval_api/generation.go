@@ -20,6 +20,32 @@ type TraceOptions struct {
 	Days int
 }
 
+// WithoutAgentSource drops the agent source, leaving what can still be
+// generated from.
+//
+// Seeding generation from an agent currently fails server-side for every agent,
+// while the same request carrying only the prompt succeeds.
+func WithoutAgentSource(sources []GenerationSource) []GenerationSource {
+	kept := make([]GenerationSource, 0, len(sources))
+	for _, s := range sources {
+		if s.Type == "agent" {
+			continue
+		}
+		kept = append(kept, s)
+	}
+	return kept
+}
+
+// HasPromptSource reports whether anything remains to generate from.
+func HasPromptSource(sources []GenerationSource) bool {
+	for _, s := range sources {
+		if s.Type == "prompt" && s.Prompt != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // BuildGenerationSources constructs the sources array for generation jobs.
 // A prompt source is included when instruction is non-empty, along with the
 // agent source. When traces is non-nil and Days > 0, a traces source is
