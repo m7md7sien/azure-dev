@@ -188,6 +188,22 @@ func runEvalGenerate(ctx context.Context, flags *evalGenerateFlags, noPrompt boo
 		return err
 	}
 
+	// Checked before anything is written. These fail on the flags alone, and a
+	// command that never ran should not leave a scaffold behind.
+	//
+	// Safe to move ahead of the baseline write because that only produces a
+	// config file when an instruction was supplied, and an instruction already
+	// satisfies the first check.
+	if flags.instruction == "" && flags.instructionFile == "" && flags.configFile == "" &&
+		(flags.dataset == "" || len(flags.evaluators) == 0) {
+		return fmt.Errorf(
+			"one of --gen-instruction, --gen-instruction-file, --config, or both --dataset and --evaluators is required" +
+				" when generating eval assets for a hosted agent")
+	}
+	if flags.maxSamples < 15 || flags.maxSamples > 1000 {
+		return fmt.Errorf("--max-samples must be between 15 and 1000")
+	}
+
 	// Write baseline config if none was resolved but we have an instruction.
 	if flags.configFile == "" && resolved.hasProject {
 		instruction := resolvedInstruction(flags)
@@ -198,16 +214,6 @@ func runEvalGenerate(ctx context.Context, flags *evalGenerateFlags, noPrompt boo
 
 	if !isRegenerate {
 		flags.name = resolveEvalName(flags)
-	}
-
-	if flags.instruction == "" && flags.instructionFile == "" && flags.configFile == "" &&
-		(flags.dataset == "" || len(flags.evaluators) == 0) {
-		return fmt.Errorf(
-			"one of --gen-instruction, --gen-instruction-file, --config, or both --dataset and --evaluators is required" +
-				" when generating eval assets for a hosted agent")
-	}
-	if flags.maxSamples < 15 || flags.maxSamples > 1000 {
-		return fmt.Errorf("--max-samples must be between 15 and 1000")
 	}
 
 	// Build config and submit generation jobs.
