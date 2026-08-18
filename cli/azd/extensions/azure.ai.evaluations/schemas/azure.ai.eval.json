@@ -13,8 +13,13 @@
     },
     "evaluators": {
       "type": "array",
-      "description": "Catalog of named custom evaluators. Built-in evaluators are referenced straight from an eval and are never declared here.",
-      "items": { "$ref": "#/definitions/EvaluatorDecl" }
+      "description": "Catalog of named custom evaluators. Each entry is either an inline definition or a $ref to a file holding one. Built-in evaluators are referenced straight from an eval and are never declared here.",
+      "items": {
+        "oneOf": [
+          { "$ref": "#/definitions/EvaluatorDecl" },
+          { "$ref": "#/definitions/FileRef" }
+        ]
+      }
     },
     "evals": {
       "type": "array",
@@ -23,6 +28,18 @@
     }
   },
   "definitions": {
+    "FileRef": {
+      "type": "object",
+      "required": ["$ref"],
+      "additionalProperties": true,
+      "description": "Replace an inline definition with a reference to an external YAML or JSON file. Sibling properties on the same object act as overlay overrides on top of the loaded file.",
+      "properties": {
+        "$ref": {
+          "type": "string",
+          "description": "Path to a YAML or JSON file containing the definition. Relative paths resolve from the file containing this $ref. Absolute paths are also accepted; remote URLs are not supported."
+        }
+      }
+    },
     "DatasetDecl": {
       "type": "object",
       "required": ["name"],
@@ -32,9 +49,9 @@
           "type": "string",
           "description": "Name the dataset is registered under. Letters, digits, dashes and underscores, up to 255 characters."
         },
-        "source": {
+        "file": {
           "type": "string",
-          "description": "Path to a local .jsonl whose rows are uploaded on deploy, relative to this file. Not a $ref: the file is a data artifact to publish, not a definition to splice in. Omit to use a dataset already registered under this name."
+          "description": "Path to a local .jsonl whose rows are uploaded on deploy, relative to this file. Deliberately not a $ref: the rows are a data artifact to publish, not a definition to splice in, and a .jsonl is neither YAML nor JSON. Omit to use a dataset already registered under this name."
         },
         "version": {
           "type": "string",
@@ -45,15 +62,14 @@
     "EvaluatorDecl": {
       "type": "object",
       "required": ["name"],
-      "additionalProperties": false,
+      "additionalProperties": true,
+      "description": "An evaluator definition. The rubric's own keys -- type and dimensions, or a definition object wrapping them -- sit beside name, because the entry is the definition rather than a pointer to one. The service owns those keys, so they are not enumerated here.",
+      "$comment": "additionalProperties has to stay true to carry the service-owned rubric keys, so it cannot tell itself apart from a FileRef the way the agents schemas do. Rejecting $ref here is what keeps the oneOf unambiguous.",
+      "not": { "required": ["$ref"] },
       "properties": {
         "name": {
           "type": "string",
           "description": "Name the evaluator is registered under. Letters, digits, dashes and underscores, up to 255 characters."
-        },
-        "source": {
-          "type": "string",
-          "description": "Path to a local .json rubric -- a list of weighted scoring dimensions -- relative to this file. Published on deploy and fingerprinted locally so a later deploy can tell an edit here from a version published elsewhere."
         },
         "version": {
           "type": "string",

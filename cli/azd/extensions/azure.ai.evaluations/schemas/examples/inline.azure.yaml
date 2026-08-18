@@ -9,14 +9,22 @@ services:
 
     datasets:
       - name: support-agent-regression
-        source: ./datasets/support-agent-regression.jsonl
+        file: ./datasets/support-agent-regression.jsonl
       - name: prod-golden
-        source: ./datasets/prod-golden.jsonl
+        file: ./datasets/prod-golden.jsonl
         version: "2"
 
     evaluators:
-      - name: support-agent-quality
-        source: ./evaluators/support-agent-quality.json
+      # The definition lives in another file, the way agents and projects do it.
+      - $ref: ./evaluators/support-agent-quality.json
+        name: support-agent-quality
+      # Or written out here.
+      - name: tone
+        definition:
+          type: rubric
+          dimensions:
+            - name: politeness
+              weight: 1
 
     evals:
       - name: support-agent-regression-eval
