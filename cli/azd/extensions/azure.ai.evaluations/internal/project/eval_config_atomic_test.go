@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -37,6 +38,15 @@ func TestSaveEvalConfigNeverExposesAHalfWrittenFile(t *testing.T) {
 	}
 	require.NoError(t, SaveEvalConfigTo(path, full))
 
+	// Every field, not the eval count. A document caught mid-write can still
+	// parse with two evals while having lost the datasets, or a field off the
+	// second one, and counting entries reports that as a whole file. Read back
+	// what a correct read returns and hold every later read to it.
+	baseline, err := LoadEvalConfig(path)
+	require.NoError(t, err)
+	require.Len(t, baseline.Evals, 2)
+	require.Len(t, baseline.Datasets, 1)
+
 	var wg sync.WaitGroup
 	stop := make(chan struct{})
 	var truncated int
@@ -62,10 +72,13 @@ func TestSaveEvalConfigNeverExposesAHalfWrittenFile(t *testing.T) {
 				}
 				continue
 			}
-			if len(cfg.Evals) != 2 {
+			if !reflect.DeepEqual(cfg, baseline) {
 				truncated++
 				if firstLoss == "" {
-					firstLoss = fmt.Sprintf("the read returned a config carrying %d evals", len(cfg.Evals))
+					firstLoss = fmt.Sprintf(
+						"the read returned %d evals and %d datasets, wanted %d and %d",
+						len(cfg.Evals), len(cfg.Datasets),
+						len(baseline.Evals), len(baseline.Datasets))
 				}
 			}
 		}
@@ -144,13 +157,18 @@ func TestSaveEvalConfigRoundTripsThroughTheRename(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "azure.eval.yaml")
 	want := &EvalConfig{Evals: []Eval{{Name: "only", EvaluationLevel: "turn"}}}
 
+	// A different first write, so the second one has something to replace.
+	// Writing the same payload twice passes even if the second save silently
+	// left the original file where it was, which is the case worth catching.
+	first := &EvalConfig{Evals: []Eval{{Name: "replaced", EvaluationLevel: "conversation"}}}
+	require.NoError(t, SaveEvalConfigTo(path, first))
 	require.NoError(t, SaveEvalConfigTo(path, want))
-	require.NoError(t, SaveEvalConfigTo(path, want)) // over an existing file
 
 	got, err := LoadEvalConfig(path)
 	require.NoError(t, err)
 	require.Len(t, got.Evals, 1)
-	assert.Equal(t, "only", got.Evals[0].Name)
+	assert.Equal(t, "only", got.Evals[0].Name, "the second save has to have replaced the first")
+	assert.Equal(t, "turn", got.Evals[0].EvaluationLevel)
 
 	// The temporary file is this function's business and must not be left over.
 	entries, err := os.ReadDir(filepath.Dir(path))
