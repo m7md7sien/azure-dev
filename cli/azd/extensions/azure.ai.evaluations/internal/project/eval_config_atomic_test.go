@@ -49,12 +49,13 @@ func TestSaveEvalConfigNeverExposesAHalfWrittenFile(t *testing.T) {
 
 	var wg sync.WaitGroup
 	stop := make(chan struct{})
-	var truncated int
-	// What the reader saw, not just how often. The two causes want opposite
-	// responses -- a config that really lost its evals is the bug this guards,
-	// while a read that failed under contention may only mean the retry budget
-	// was short -- and a bare count cannot tell them apart after the fact.
-	var firstLoss string
+	// Counted apart, because they want opposite responses. A config observed
+	// with fields missing is the bug this test guards. A read that failed under
+	// contention may only mean the retry budget was short on a loaded machine.
+	// One combined counter, or one example off whichever happened first, leaves
+	// a run where both occurred looking like whichever won the race.
+	var readErrors, mismatches int
+	var firstReadError, firstMismatch string
 	var replacements int64
 
 	wg.Go(func() {
@@ -66,17 +67,17 @@ func TestSaveEvalConfigNeverExposesAHalfWrittenFile(t *testing.T) {
 				// remove-then-rename exposes, and OpenEvalConfig turns it into
 				// "there is no configuration yet" -- the same loss this guards
 				// against, by another route.
-				truncated++
-				if firstLoss == "" {
-					firstLoss = fmt.Sprintf("the read failed: %v", err)
+				readErrors++
+				if firstReadError == "" {
+					firstReadError = err.Error()
 				}
 				continue
 			}
 			if !reflect.DeepEqual(cfg, baseline) {
-				truncated++
-				if firstLoss == "" {
-					firstLoss = fmt.Sprintf(
-						"the read returned %d evals and %d datasets, wanted %d and %d",
+				mismatches++
+				if firstMismatch == "" {
+					firstMismatch = fmt.Sprintf(
+						"%d evals and %d datasets, wanted %d and %d",
 						len(cfg.Evals), len(cfg.Datasets),
 						len(baseline.Evals), len(baseline.Datasets))
 				}
@@ -101,9 +102,20 @@ func TestSaveEvalConfigNeverExposesAHalfWrittenFile(t *testing.T) {
 
 	require.NotZero(t, atomic.LoadInt64(&replacements),
 		"the writer has to have replaced the file, or nothing was under test")
-	assert.Zerof(t, truncated,
-		"a concurrent reader failed to see the whole config %d times out of %d replacements; first was %s",
-		truncated, atomic.LoadInt64(&replacements), firstLoss)
+	assert.Zerof(t, readErrors+mismatches,
+		"over %d replacements a concurrent reader saw %d incomplete configs (first: %s) "+
+			"and %d failed reads (first: %s)",
+		atomic.LoadInt64(&replacements),
+		mismatches, orNone(firstMismatch),
+		readErrors, orNone(firstReadError))
+}
+
+// orNone keeps an absent example from reading as an empty one.
+func orNone(s string) string {
+	if s == "" {
+		return "none"
+	}
+	return s
 }
 
 // OpenEvalConfig maps a missing file to "no configuration yet", which callers
