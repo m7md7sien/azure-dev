@@ -696,13 +696,13 @@ func localDatasetPath(configPath string, group *project.Eval) string {
 		return ""
 	}
 	decl, ok := cfg.DatasetDeclaration(group.Dataset)
-	if !ok || decl.Source == "" {
+	if !ok || decl.File == "" {
 		return ""
 	}
-	if filepath.IsAbs(decl.Source) {
-		return decl.Source
+	if filepath.IsAbs(decl.File) {
+		return decl.File
 	}
-	return filepath.Join(filepath.Dir(configPath), decl.Source)
+	return filepath.Join(filepath.Dir(configPath), decl.File)
 }
 
 // datasetIsDeclared says whether the configuration's catalog holds the dataset

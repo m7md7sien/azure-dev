@@ -401,7 +401,7 @@ func planScaffold(in scaffoldInput) scaffold {
 		}
 		eval.Dataset = datasetName
 		out.datasetName = datasetName
-		addDatasetDecl(cfg, project.DatasetDecl{Name: datasetName, Source: datasetSource})
+		addDatasetDecl(cfg, project.DatasetDecl{Name: datasetName, File: datasetSource})
 	}
 
 	// Every evaluator carries the judge deployment, because that is where the

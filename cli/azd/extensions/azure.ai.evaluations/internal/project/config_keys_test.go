@@ -80,9 +80,10 @@ func TestSourceDeclKeys(t *testing.T) {
 		yamlKeys(t, SourceDecl{}))
 }
 
-// The catalogs are named, reusable assets: a name and where it comes from.
+// The catalogs are named, reusable assets. A dataset says where its rows come
+// from; an evaluator carries its definition, so it has no path of its own.
 func TestCatalogKeys(t *testing.T) {
-	assert.ElementsMatch(t, []string{"name", "source", "version"}, yamlKeys(t, DatasetDecl{}))
+	assert.ElementsMatch(t, []string{"name", "file", "version"}, yamlKeys(t, DatasetDecl{}))
 	assert.ElementsMatch(t, []string{"name", "source", "version"}, yamlKeys(t, EvaluatorDecl{}))
 }
 

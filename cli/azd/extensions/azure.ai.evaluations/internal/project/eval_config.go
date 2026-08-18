@@ -26,11 +26,15 @@ type EvalConfig struct {
 	Evals      []Eval          `yaml:"evals,omitempty"      json:"evals,omitempty"`
 }
 
-// DatasetDecl is a catalog entry. A local Source is uploaded on deploy; without
+// DatasetDecl is a catalog entry. A local File is uploaded on deploy; without
 // one the name must already resolve to a registered dataset.
+//
+// Deliberately not a `$ref`: that directive replaces a definition with one
+// loaded from a YAML or JSON file, and these rows are an artifact to publish.
+// A `.jsonl` is neither, so there would be nothing to splice.
 type DatasetDecl struct {
 	Name    string `yaml:"name"              json:"name"`
-	Source  string `yaml:"source,omitempty"  json:"source,omitempty"`
+	File    string `yaml:"file,omitempty"    json:"file,omitempty"`
 	Version string `yaml:"version,omitempty" json:"version,omitempty"`
 }
 
@@ -205,7 +209,7 @@ func (c *EvalConfig) CustomEvaluators() []EvaluatorDecl {
 func (c *EvalConfig) LocalDatasets() []DatasetDecl {
 	var owned []DatasetDecl
 	for _, decl := range c.Datasets {
-		if decl.Source == "" {
+		if decl.File == "" {
 			continue
 		}
 		owned = append(owned, decl)

@@ -149,14 +149,14 @@ func (p *EvalServiceTargetProvider) Deploy(
 	// 1. Datasets the configuration owns. Paths are kept so an eval that names
 	// one can derive its columns without reading the blob back.
 	//
-	// A declaration with no `source:` is included rather than skipped: it names
+	// A declaration with no `file:` is included rather than skipped: it names
 	// a dataset that is already registered, and reconciling it is what confirms
 	// it is really there and settles which version a `version:` pin selected.
 	// Skipping it would leave a misspelled name to surface as a failed run.
 	datasetPaths := map[string]string{}
 	for _, decl := range cfg.Datasets {
 		report(progress, messages.ReconcilingDataset(decl.Name))
-		localPath := ResolveSource(baseDir, decl.Source)
+		localPath := ResolveSource(baseDir, decl.File)
 		datasetPaths[decl.Name] = localPath
 		version, changed, err := reconciler.EnsureDataset(ctx, decl, localPath)
 		if err != nil {
