@@ -4,6 +4,7 @@
 package project
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -39,6 +40,11 @@ func TestSaveEvalConfigNeverExposesAHalfWrittenFile(t *testing.T) {
 	var wg sync.WaitGroup
 	stop := make(chan struct{})
 	var truncated int
+	// What the reader saw, not just how often. The two causes want opposite
+	// responses -- a config that really lost its evals is the bug this guards,
+	// while a read that failed under contention may only mean the retry budget
+	// was short -- and a bare count cannot tell them apart after the fact.
+	var firstLoss string
 	var replacements int64
 
 	wg.Go(func() {
@@ -51,10 +57,16 @@ func TestSaveEvalConfigNeverExposesAHalfWrittenFile(t *testing.T) {
 				// "there is no configuration yet" -- the same loss this guards
 				// against, by another route.
 				truncated++
+				if firstLoss == "" {
+					firstLoss = fmt.Sprintf("the read failed: %v", err)
+				}
 				continue
 			}
 			if len(cfg.Evals) != 2 {
 				truncated++
+				if firstLoss == "" {
+					firstLoss = fmt.Sprintf("the read returned a config carrying %d evals", len(cfg.Evals))
+				}
 			}
 		}
 		close(stop)
@@ -77,7 +89,8 @@ func TestSaveEvalConfigNeverExposesAHalfWrittenFile(t *testing.T) {
 	require.NotZero(t, atomic.LoadInt64(&replacements),
 		"the writer has to have replaced the file, or nothing was under test")
 	assert.Zerof(t, truncated,
-		"a concurrent reader failed to see the whole config %d times", truncated)
+		"a concurrent reader failed to see the whole config %d times out of %d replacements; first was %s",
+		truncated, atomic.LoadInt64(&replacements), firstLoss)
 }
 
 // OpenEvalConfig maps a missing file to "no configuration yet", which callers
