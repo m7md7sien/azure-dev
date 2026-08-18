@@ -30,18 +30,18 @@ services:
 # evals/azure.yaml
 datasets:
   - name: support-golden
-    source: ./datasets/support-golden.jsonl
+    file: ./datasets/support-golden.jsonl
 
 evaluators:
   - name: support-quality
     source: ./evaluators/support-quality.json
 
-evalGroups:
+evals:
   - name: support-quality
     dataset: support-golden
     evaluators:
-      - builtin.task_adherence
-      - support-quality
+      - evaluator: builtin.task_adherence
+      - evaluator: support-quality
     target:
       type: agent
       name: support-agent
