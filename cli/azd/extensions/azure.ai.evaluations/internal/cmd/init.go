@@ -271,6 +271,9 @@ func newInitCommand() *cobra.Command {
 				fmt.Fprint(out, messages.AddedServiceLine(rootConfigName, serviceName))
 			case wiringPresent:
 				fmt.Fprint(out, messages.AlreadyDeclaresServiceLine(rootConfigName, serviceName))
+			case wiringUpdated:
+				fmt.Fprint(out, messages.RepointedServiceLine(
+					rootConfigName, serviceName, filepath.ToSlash(configPath)))
 			}
 
 			// Only what was actually scheduled is offered. Suggesting
@@ -624,6 +627,7 @@ const aiProjectHost = "azure.ai.project"
 const (
 	wiringAdded   = "added"   // the service was added to the project
 	wiringPresent = "present" // an eval service was already declared
+	wiringUpdated = "updated" // a declared service was repointed at this configuration
 )
 
 // readAzdProject returns the project, without changing it.
@@ -764,14 +768,27 @@ func ensureRootEvalService(
 		return "", messages.NoAzdProject()
 	}
 
-	// A service already pointing at this configuration is left alone:
-	// re-adding it would deploy the same evals twice.
+	wantRef := "./" + filepath.ToSlash(configPath)
+
+	// A service already pointing at this configuration is left alone: re-adding
+	// it would deploy the same evals twice.
+	//
+	// One pointing somewhere else is not left alone. `init --path` moves the
+	// configuration, and an entry still naming the old file is what `azd up`
+	// deploys and what every command reads on a machine that never ran this
+	// init -- the recorded path is in the azd environment, and that does not
+	// travel with the repository. AddService reloads from disk and replaces the
+	// entry, so writing it again is how it gets repointed.
+	outcome := wiringAdded
 	if svc, ok := resp.GetProject().GetServices()[serviceName]; ok && svc.GetHost() == project.EvalHost {
-		return wiringPresent, nil
+		if serviceRef(svc) == wantRef {
+			return wiringPresent, nil
+		}
+		outcome = wiringUpdated
 	}
 
 	props, err := structpb.NewStruct(map[string]any{
-		"$ref": "./" + filepath.ToSlash(configPath),
+		"$ref": wantRef,
 	})
 	if err != nil {
 		return "", messages.BuildingServiceEntry(err)
@@ -788,7 +805,17 @@ func ensureRootEvalService(
 	if err != nil {
 		return "", messages.AddingServiceTo(rootConfigName, err)
 	}
-	return wiringAdded, nil
+	return outcome, nil
+}
+
+// serviceRef is the `$ref` an existing service entry carries, or empty.
+func serviceRef(svc *azdext.ServiceConfig) string {
+	props := svc.GetAdditionalProperties()
+	if props == nil {
+		return ""
+	}
+	ref, _ := props.AsMap()["$ref"].(string)
+	return ref
 }
 
 // evalServiceUses orders the eval after the things it reads.

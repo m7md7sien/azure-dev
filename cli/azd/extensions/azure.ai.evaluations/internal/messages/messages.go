@@ -1830,6 +1830,14 @@ func AlreadyDeclaresServiceLine(rootConfig, service string) string {
 	return fmt.Sprintf("  %-33s already declares service '%s'\n", rootConfig, service)
 }
 
+// RepointedServiceLine reports a declared service moved to this configuration.
+//
+// Said rather than done quietly: the entry decides what `azd up` deploys, and a
+// caller who did not expect their project file to change should see that it did.
+func RepointedServiceLine(rootConfig, service, configPath string) string {
+	return fmt.Sprintf("  %-33s pointed service '%s' at %s\n", rootConfig, service, configPath)
+}
+
 // FirstNextStep opens the list of commands to run after a scaffold.
 func FirstNextStep(step string) string {
 	return fmt.Sprintf("\nNext: %s\n", step)
