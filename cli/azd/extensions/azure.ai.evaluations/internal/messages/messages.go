@@ -232,11 +232,6 @@ func ErroredNotScored(errored int) string {
 	return fmt.Sprintf("(%d errored, not scored)", errored)
 }
 
-// ReportLink closes a run summary with the one link the run has.
-func ReportLink(url string) string {
-	return fmt.Sprintf("Report: %s\n", url)
-}
-
 // EvalNotDeployed reports an eval id the project does not hold.
 func EvalNotDeployed(evalID, deployCmd string) error {
 	return fmt.Errorf(
@@ -290,31 +285,6 @@ func EvalHasNoRuns(evalID string) error {
 // ReadingRun reports a failure to read the run the caller named.
 func ReadingRun(runID string, err error) error {
 	return fmt.Errorf("reading run %s: %w", runID, err)
-}
-
-// RunHeading opens the detail view of one run.
-func RunHeading(runID string) string {
-	return fmt.Sprintf("Run %s\n", runID)
-}
-
-// RunNameLine reports the run's name in the detail view.
-func RunNameLine(name string) string {
-	return fmt.Sprintf("  name    : %s\n", name)
-}
-
-// RunStatusDetail reports the run's status in the detail view.
-func RunStatusDetail(status string) string {
-	return fmt.Sprintf("  status  : %s\n", status)
-}
-
-// RunResultsLine reports the run's counts in the detail view.
-func RunResultsLine(counts string) string {
-	return fmt.Sprintf("  results : %s\n", counts)
-}
-
-// RunReportLine reports the run's one link in the detail view.
-func RunReportLine(url string) string {
-	return fmt.Sprintf("  report  : %s\n", url)
 }
 
 // CountsSummary renders a run's verdict counts on one line.
@@ -472,9 +442,32 @@ func OutputItemReason(reason string) string {
 	return fmt.Sprintf("  %s\n", reason)
 }
 
-// ReportLinkAfterRows closes a per-sample listing with the run's one link.
-func ReportLinkAfterRows(url string) string {
-	return fmt.Sprintf("\nReport: %s\n", url)
+// OutputFileCannotHoldBothArtifacts reports one --output-dir file for two
+// artifacts.
+//
+// Both jobs would resolve to it and both would write it, concurrently, and the
+// configuration would then name it as a dataset and as an evaluator.
+func OutputFileCannotHoldBothArtifacts(outputDir string) error {
+	return fmt.Errorf(
+		"--output-dir %q names a file, and this generates a dataset and an evaluator; "+
+			"name a directory, or add --dataset or --evaluator to generate one of them",
+		filepath.ToSlash(outputDir))
+}
+
+// UsingLastRun names the run a command chose when it was not given one.
+//
+// Written to stderr so it does not land in a redirected listing.
+func UsingLastRun(runID string) string {
+	return fmt.Sprintf("Using last run: %s\n", runID)
+}
+
+// PortalLinkAfterRows closes a per-sample listing with the run's one link.
+//
+// Labelled the way every other view labels it: the run's report page is in the
+// portal, and a reader looking for the link should not have to know two words
+// for it.
+func PortalLinkAfterRows(url string) string {
+	return fmt.Sprintf("\nPortal: %s\n", url)
 }
 
 // ExportFormatUnsupported reports an --format the export command cannot write.
@@ -918,7 +911,13 @@ func JSONLNoRows(path string) error {
 }
 
 // ReadingFromFile reports a --from-file that would not stat.
+//
+// A path that is simply absent is reported as absent: the wrapped error is a
+// syscall name that says nothing to the person who mistyped it.
 func ReadingFromFile(path string, err error) error {
+	if errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("--from-file %q does not exist", filepath.ToSlash(path))
+	}
 	return fmt.Errorf("reading --from-file %q: %w", filepath.ToSlash(path), err)
 }
 
@@ -992,7 +991,7 @@ func NoDatasets() string {
 // is the one thing only the caller knows, and is named outside the command.
 func NoDatasetVersions(dataset string) string {
 	return fmt.Sprintf("No versions of dataset %q. Publish one with "+
-		"`azd ai eval dataset create %s` and a --from-file path.\n", dataset, dataset)
+		"`azd ai eval dataset create %s` and a --from-file path.\n", dataset, shellArg(dataset))
 }
 
 // ResolvingLatestDatasetVersion reports a failure to find what "latest" means.
@@ -1015,7 +1014,8 @@ func DatasetNotFound(dataset string) error {
 func DatasetVersionNotFoundWithHint(dataset, version string) error {
 	return fmt.Errorf(
 		"no dataset %q at version %q in this project; "+
-			"`azd ai eval dataset versions list %s` shows the ones there are", dataset, version, dataset)
+			"`azd ai eval dataset versions list %s` shows the ones there are",
+		dataset, version, shellArg(dataset))
 }
 
 // DatasetVersionNotFound reports a dataset version there is nothing to delete at.
@@ -1058,7 +1058,7 @@ func DatasetNotGeneratedYet(dataset, path string) error {
 		"its rows %s have not been generated yet. "+
 			"Run `azd ai eval generate --dataset --dataset-name %s` to write them, "+
 			"or point the declaration at a .jsonl you already have",
-		filepath.ToSlash(path), dataset)
+		filepath.ToSlash(path), shellArg(dataset))
 }
 
 // DatasetNotLocalNorFound reports a source-less dataset the project rejected.
@@ -1130,6 +1130,15 @@ func StartingPendingUpload(err error) error {
 // NoUploadURI reports an accepted upload the service gave nowhere to write to.
 func NoUploadURI() error {
 	return errors.New("no upload SAS URI returned from startPendingUpload")
+}
+
+// NoBlobURI reports an accepted upload the service gave no way to finalize.
+//
+// Separate from NoUploadURI because they are different fields of the same
+// response: the SAS says where to write, the blob URI says what to register,
+// and a response can carry one without the other.
+func NoBlobURI() error {
+	return errors.New("no blob URI returned from startPendingUpload, so there is nothing to register the upload as")
 }
 
 // UploadingBlob reports the dataset content failing to upload.
@@ -1214,7 +1223,7 @@ func EvaluatorNotGeneratedYet(evaluator, path string) error {
 		"its definition %s has not been generated yet. "+
 			"Run `azd ai eval generate --evaluator --evaluator-name %s` to write it, "+
 			"or drop the evaluator from azure.eval.yaml",
-		filepath.ToSlash(path), evaluator)
+		filepath.ToSlash(path), shellArg(evaluator))
 }
 
 // CheckingEvaluatorExists reports a failure to tell create from update.
@@ -1348,8 +1357,8 @@ func BareEvaluatorEntry(name string) error {
 }
 
 // EvaluatorsMustBeSequence reports an evaluators: block that is not a list.
-func EvaluatorsMustBeSequence(kind any) error {
-	return fmt.Errorf("evaluators must be a sequence, got %v", kind)
+func EvaluatorsMustBeSequence(kind string) error {
+	return fmt.Errorf("evaluators must be a list, got %s", kind)
 }
 
 // EvaluatorsMustBeList reports an evaluators: block that is not a JSON array.
@@ -1373,8 +1382,15 @@ func EvaluatorEntryMissingEvaluator() error {
 }
 
 // EvaluatorEntryMustBeMapping reports an entry that is neither map nor string.
-func EvaluatorEntryMustBeMapping(kind any) error {
-	return fmt.Errorf("evaluator entry must be a mapping, got %v", kind)
+func EvaluatorEntryMustBeMapping(kind string) error {
+	return fmt.Errorf("evaluator entry must be a mapping, got %s", kind)
+}
+
+// EvaluatorAliasIsCircular reports an anchor that contains its own alias.
+//
+// Expanding it has no end, so it is named rather than followed.
+func EvaluatorAliasIsCircular(anchor string) error {
+	return fmt.Errorf("anchor %q refers to itself, so it cannot be expanded", anchor)
 }
 
 // ---------------------------------------------------------------------------
@@ -2709,4 +2725,32 @@ func CouldNotReadAgentForModel(agent string, err error) string {
 			"deployment to default to; pass --generation-model\n", agent)
 	}
 	return fmt.Sprintf("  warning: could not read agent %q for its deployment: %v\n", agent, err)
+}
+
+// shellArg wraps a value a shell would otherwise read as more than one
+// argument.
+//
+// A suggested command is written to be pasted and run. A name the caller chose
+// -- `--name "my eval"` becomes the dataset's name -- turns
+// `--dataset-name my eval` into one flag and a stray positional argument, which
+// generate refuses without naming the cause.
+//
+// Double quotes are what cmd, PowerShell, bash and zsh all read the same way.
+// A value containing $ or a backtick has no portable answer and is wrapped
+// anyway: one argument that may expand still beats two that certainly break.
+// Backslashes are left alone, so a Windows path comes back out as itself.
+func shellArg(v string) string {
+	if v == "" {
+		return `""`
+	}
+	if !strings.ContainsAny(v, " \t\n\"'`$&|;<>()*?[]#~!") {
+		return v
+	}
+	return `"` + strings.ReplaceAll(v, `"`, `\"`) + `"`
+}
+
+// ShellArg is shellArg for the command builders outside this package, so one
+// rule decides how every printed command quotes what it carries.
+func ShellArg(v string) string {
+	return shellArg(v)
 }

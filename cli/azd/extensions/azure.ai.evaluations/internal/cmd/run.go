@@ -22,7 +22,6 @@ import (
 	"azureaieval/internal/pkg/eval_api"
 	"azureaieval/internal/project"
 
-	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 )
 
@@ -206,7 +205,7 @@ func buildRunCommand(use, short string) *cobra.Command {
 			// no dataset, so it records none.
 			if group != nil && group.Dataset != "" && group.Source == nil {
 				metadata[metaDataset] = group.Dataset
-				if v := ec.getEnvValue(ctx, versionKey("dataset", group.Dataset)); v != "" {
+				if v := ec.scoredDatasetVersion(ctx, group, configPath); v != "" {
 					metadata[metaDatasetVersion] = v
 				}
 			}
@@ -227,7 +226,8 @@ func buildRunCommand(use, short string) *cobra.Command {
 			if err := ec.setEnvValue(ctx, envKeyEvalRunID, run.ID); err != nil {
 				// Persisting the run id is a convenience for later commands.
 				// Reported on stdout because azd does not surface an
-				// extension's stderr, and skipped outside a project.
+				// extension's stderr under `azd up`, which is where a deploy
+				// would lose it. Skipped outside a project.
 				if !errors.Is(err, errNoAzdEnvironment) && !isJSON(cmd) {
 					fmt.Fprint(out, messages.Warning(err))
 				}
@@ -561,7 +561,8 @@ func (ec *evalContext) buildRunDataSource(
 	// name is rejected with "invalid data source file ids".
 	localPath := localDatasetPath(configPath, group)
 	if localPath == "" {
-		items, err := ec.readRegisteredDataset(ctx, group.Dataset, maxSamples)
+		items, err := ec.readRegisteredDataset(
+			ctx, group.Dataset, declaredDatasetVersion(configPath, group), maxSamples)
 		if err != nil {
 			return nil, err
 		}
@@ -638,9 +639,15 @@ func responsesDataSource(group *project.Eval) (*eval_api.EvalRunDataSource, erro
 func (ec *evalContext) readRegisteredDataset(
 	ctx context.Context,
 	name string,
+	pinned string,
 	maxSamples int,
 ) ([]map[string]any, error) {
-	version := ec.getEnvValue(ctx, versionKey("dataset", name))
+	// The declaration wins: it is the author saying which rows to score, and it
+	// is right whether or not there is an azd environment to have recorded one.
+	version := pinned
+	if version == "" {
+		version = ec.getEnvValue(ctx, versionKey("dataset", name))
+	}
 	if version == "" {
 		versions, err := ec.datasetClient.ListDatasetVersions(ctx, name, ProjectEndpointAPIVersion)
 		if err != nil {
@@ -703,6 +710,56 @@ func localDatasetPath(configPath string, group *project.Eval) string {
 		return decl.File
 	}
 	return filepath.Join(filepath.Dir(configPath), decl.File)
+}
+
+// declaredDatasetVersion is the `version:` the catalog pins this dataset to.
+//
+// A pin is the author saying which rows to score, and it is read from the
+// declaration rather than from the environment: the recorded version means the
+// one the file's content published, which is what the deploy's drift check
+// compares against, and overwriting it with a pin made removing the pin later
+// read as somebody publishing behind the configuration's back.
+func declaredDatasetVersion(configPath string, group *project.Eval) string {
+	if group == nil || configPath == "" {
+		return ""
+	}
+	cfg, err := project.LoadEvalConfig(configPath)
+	if err != nil || cfg == nil {
+		return ""
+	}
+	decl, ok := cfg.DatasetDeclaration(group.Dataset)
+	if !ok {
+		return ""
+	}
+	return decl.Version
+}
+
+// scoredDatasetVersion labels a run with the version its rows actually came
+// from, or with nothing when that cannot be said.
+//
+// It has to follow the same branch the rows did. A declaration carrying both
+// `source:` and `version:` reads the file from disk, so the pin says nothing
+// about what was scored. The recorded version is the honest label there only
+// once a fingerprint exists to tie the file to it -- that is what
+// checkDatasetRegistered confirms, and it also declines when there is none. A
+// dataset that was registered and has since gained a `source:` has a recorded
+// version and no fingerprint, and stamping the run with it would assert a
+// provenance the rows no longer have.
+func (ec *evalContext) scoredDatasetVersion(
+	ctx context.Context,
+	group *project.Eval,
+	configPath string,
+) string {
+	if localDatasetPath(configPath, group) != "" {
+		if ec.getEnvValue(ctx, project.FingerprintKey("dataset", group.Dataset)) == "" {
+			return ""
+		}
+		return ec.getEnvValue(ctx, versionKey("dataset", group.Dataset))
+	}
+	if pinned := declaredDatasetVersion(configPath, group); pinned != "" {
+		return pinned
+	}
+	return ec.getEnvValue(ctx, versionKey("dataset", group.Dataset))
 }
 
 // datasetIsDeclared says whether the configuration's catalog holds the dataset
@@ -1004,9 +1061,7 @@ func renderRun(
 		}
 	}
 
-	if url := runLink(run.ReportURL, run.PortalURL); url != "" {
-		fmt.Fprint(out, messages.ReportLink(color.CyanString(url)))
-	}
+	writePortalLink(out, runLink(run.ReportURL, run.PortalURL))
 	return nil
 }
 

@@ -43,6 +43,11 @@ type Reconciler interface {
 	// dataset backing the group, or empty when it is already registered; it lets
 	// the reconciler bind criteria to the columns that actually exist.
 	EnsureEval(ctx context.Context, group Eval, datasetPath string) (id string, created bool, err error)
+	// ReserveDeclared marks the evals these declarations already resolve to as
+	// spoken for, so no other declaration adopts one. Called once before
+	// reconciling, because adoption otherwise depends on the order the file
+	// lists them in.
+	ReserveDeclared(ctx context.Context, groups []Eval)
 }
 
 // EvalServiceTargetProvider deploys eval resources during `azd up`. azd owns
@@ -143,7 +148,7 @@ func (p *EvalServiceTargetProvider) Deploy(
 		return nil, err
 	}
 
-	baseDir := serviceRelativeDir(serviceConfig)
+	baseDir := p.evalBaseDir(ctx, serviceConfig)
 
 	// 1. Datasets the configuration owns. Paths are kept so an eval that names
 	// one can derive its columns without reading the blob back.
@@ -181,6 +186,8 @@ func (p *EvalServiceTargetProvider) Deploy(
 	// resolve to. An evaluator tracking latest that publishes a new version
 	// leaves every eval that runs it alone, which is what keeps a rubric edit
 	// comparable against the runs before it.
+	reconciler.ReserveDeclared(ctx, cfg.Evals)
+
 	for i := range cfg.Evals {
 		eval := cfg.Evals[i]
 		report(progress, messages.ReconcilingEval(eval.Name))
@@ -205,6 +212,40 @@ func (p *EvalServiceTargetProvider) projectRoot(ctx context.Context) string {
 		return ""
 	}
 	return resp.GetProject().GetPath()
+}
+
+// evalBaseDir is the directory a declaration's `source:` resolves against.
+//
+// serviceRelativeDir answers relative to the project, because that is what the
+// service's `$ref` and relativePath are written relative to. Left there it was
+// resolved against this process's working directory instead, and azd neither
+// changes it nor reports the project through it: azure.yaml is found by walking
+// up from wherever the caller stood, and AZD_CWD carries the --cwd flag and
+// nothing else. So `azd up` from any subdirectory of the project reported every
+// dataset as not yet generated, and the remedy it offered would have billed a
+// generation job to rewrite a file already on disk.
+//
+// The same join is what agent_instructions.go does with the same helper.
+func (p *EvalServiceTargetProvider) evalBaseDir(
+	ctx context.Context,
+	serviceConfig *azdext.ServiceConfig,
+) string {
+	return baseDirUnder(p.projectRoot(ctx), serviceConfig)
+}
+
+// baseDirUnder places a service's directory under the project.
+//
+// azd does not re-root an absolute `$ref` or an absolute `project:`, so neither
+// does this: joining one under the project produced <root>/C:/shared/evals,
+// which is the bug this fixes, reached from a different input. An empty root is
+// azd having failed to name the project, where the relative path is what the
+// extension did before and is better than resolving against nothing.
+func baseDirUnder(projectRoot string, serviceConfig *azdext.ServiceConfig) string {
+	relative := serviceRelativeDir(serviceConfig)
+	if filepath.IsAbs(relative) || projectRoot == "" {
+		return relative
+	}
+	return filepath.Join(projectRoot, relative)
 }
 
 // describeResult reports whether a version was published or reused, so a
@@ -358,8 +399,8 @@ func FingerprintGroup(group Eval) (string, error) {
 	// Only substance is hashed. The id is server-assigned; name and description
 	// are what UpdateEvalParametersBody reaches, so an edit confined to them is
 	// pushed in place and must not cost the eval its id and its run history.
-	// Everything else — dataset, source, evaluators, target, level — is fixed at
-	// creation, so a change there is a new eval.
+	// Everything else — dataset, source, evaluators, target, level — is what
+	// makes this declaration the one it is.
 	name := group.Name
 	group.ID = ""
 	group.Name = ""
@@ -371,6 +412,30 @@ func FingerprintGroup(group Eval) (string, error) {
 	}
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:]), nil
+}
+
+// FingerprintDefinition hashes only what the service stores.
+//
+// max_samples and source: are applied per run, not at creation --
+// CreateOpenAIEvalRequest carries neither and buildEvalRequest reads neither.
+// Recreating the eval when one of them changes points the declaration at a new
+// id and leaves every run taken before it reachable only through the old one,
+// for an edit the stored eval cannot even express.
+//
+// Kept separate from FingerprintGroup rather than folded into it, because that
+// digest also answers "which eval was this declaration before it was renamed".
+// Two evals over the same dataset and evaluators that differ only in their
+// window are two evals, and one key for both hands the second the first one's
+// id -- so the second is never created, and the first is renamed to whichever
+// declaration came last.
+//
+// The cost is that renaming an eval and changing its window in one edit is read
+// as a new eval rather than a rename. That forks a history, which is the
+// conservative direction: the other way silently merges two.
+func FingerprintDefinition(group Eval) (string, error) {
+	group.MaxSamples = 0
+	group.Source = nil
+	return FingerprintGroup(group)
 }
 
 // FingerprintKey is the azd environment key holding an artifact's fingerprint.

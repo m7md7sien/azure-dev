@@ -27,6 +27,17 @@ import (
 // deploy half of the provider; the provider owns ordering, this owns the calls.
 type evalReconciler struct {
 	ec *evalContext
+
+	// claimed holds the evals this deploy has already settled, so a second
+	// declaration cannot adopt one. Substance keys are never removed from the
+	// environment, so one left behind by an earlier edit still points at a live
+	// eval -- and adopting it renames that eval and leaves the declaration that
+	// asked for it sharing the other one's runs.
+	claimed map[string]bool
+
+	// decided holds each declaration's digests, so reservation and
+	// reconciliation cannot answer the question differently.
+	decided map[string]evalDecision
 }
 
 var _ project.Reconciler = (*evalReconciler)(nil)
@@ -37,6 +48,110 @@ func newEvalReconciler(ctx context.Context) (project.Reconciler, error) {
 		return nil, err
 	}
 	return &evalReconciler{ec: ec}, nil
+}
+
+// claim records an eval this deploy has settled on. Built lazily, because the
+// reconciler is also constructed literally in a few places.
+func (r *evalReconciler) claim(id string) {
+	if r.claimed == nil {
+		r.claimed = map[string]bool{}
+	}
+	r.claimed[id] = true
+}
+
+// ReserveDeclared marks the evals these declarations already resolve to as
+// spoken for.
+//
+// Claiming only as each declaration finished made adoption depend on file
+// order: a declaration listed above the one that owns an eval would adopt it,
+// rename it, and end up sharing its runs. Reserving up front is the same guard
+// without the ordering. A name the environment holds no id for reserves
+// nothing, which is what leaves a genuine rename free to adopt.
+//
+// A declaration that is going to be recreated reserves nothing either: it is
+// about to abandon that eval, and holding it back would refuse the rename that
+// legitimately continues it.
+func (r *evalReconciler) ReserveDeclared(ctx context.Context, groups []project.Eval) {
+	for i := range groups {
+		decision, err := r.decide(ctx, groups[i])
+		if err != nil {
+			// Nothing decided, so nothing skipped. The error surfaces from
+			// EnsureEval, where it can fail the deploy.
+			continue
+		}
+		id := r.ec.getEnvValue(ctx, idKey("eval", groups[i].Name))
+		if id == "" || decision.recreate {
+			continue
+		}
+		r.claim(id)
+	}
+}
+
+// evalDecision is what one declaration's digests settled.
+type evalDecision struct {
+	digest     string
+	definition string
+	recreate   bool
+}
+
+// decide hashes a declaration both ways and says whether its substance changed
+// since the last deploy, answering the same way every time it is asked.
+//
+// Remembered per name because two callers ask: reservation, before anything is
+// reconciled, and EnsureEval itself. The recorded baseline is read over gRPC
+// and a read that failed answers "", so asking twice let one transient failure
+// leave an eval unreserved and then reused -- two declarations on one id, which
+// is the collision reservation exists to stop.
+//
+// digest identifies the declaration and keys the id a rename looks up.
+// definition is what the service stores, and is what the recreate comparison is
+// made against. The recorded baseline is the definition from the build that
+// split them on, and the full digest from every build before: equality with
+// either says the declaration is what was deployed.
+func (r *evalReconciler) decide(ctx context.Context, group project.Eval) (evalDecision, error) {
+	if decided, ok := r.decided[group.Name]; ok {
+		return decided, nil
+	}
+
+	digest, err := project.FingerprintGroup(group)
+	if err != nil {
+		return evalDecision{}, err
+	}
+	definition, err := project.FingerprintDefinition(group)
+	if err != nil {
+		return evalDecision{}, err
+	}
+	prior := r.ec.getEnvValue(ctx, project.FingerprintKey("eval", group.Name))
+
+	decided := evalDecision{
+		digest:     digest,
+		definition: definition,
+		recreate:   prior != "" && prior != definition && prior != digest,
+	}
+	if r.decided == nil {
+		r.decided = map[string]evalDecision{}
+	}
+	r.decided[group.Name] = decided
+	return decided, nil
+}
+
+// evalDigests hashes a declaration both ways and says whether its substance
+// changed since the last deploy.
+//
+// digest identifies the declaration and keys the id a rename looks up.
+// definition is what the service stores, and is what the recreate comparison
+// is made against. The recorded baseline is the definition from the build that
+// split them on, and the full digest from every build before: equality with
+// either says the declaration is what was deployed.
+func (r *evalReconciler) evalDigests(
+	ctx context.Context,
+	group project.Eval,
+) (digest, definition string, recreate bool, err error) {
+	decided, err := r.decide(ctx, group)
+	if err != nil {
+		return "", "", false, err
+	}
+	return decided.digest, decided.definition, decided.recreate, nil
 }
 
 // EnsureDataset registers a new version only when the local content changed.
@@ -113,6 +228,11 @@ func (r *evalReconciler) EnsureDataset(
 				); err != nil && dataset_api.IsNotFound(err) {
 					return "", false, messages.DatasetVersionNotFoundWithHint(decl.Name, decl.Version)
 				}
+				// Deliberately not recorded. The key means "the version this file's
+				// content published", which is what the drift check compares
+				// against: writing the pin here made removing it later read as
+				// somebody having published behind the configuration's back, and
+				// failed the deploy. The run reads the pin from the declaration.
 				return decl.Version, false, nil
 			}
 			if err := r.checkDatasetDrift(ctx, decl.Name, version); err != nil {
@@ -474,21 +594,19 @@ func (r *evalReconciler) EnsureEval(
 	datasetPath string,
 ) (string, bool, error) {
 	if group.ID != "" {
+		r.claim(group.ID)
 		return group.ID, false, nil
 	}
 
 	// Evals are immutable, so a change to the eval's own substance — evaluators,
-	// dataset, source, target, level — needs a new eval. Name and description are
-	// excluded from the digest and pushed in place instead.
-	recreate := false
-	digest, err := project.FingerprintGroup(group)
+	// dataset, target, level — needs a new eval. Name and description are
+	// excluded from the digest and pushed in place instead, and so are
+	// max_samples and source:, which the run carries rather than the eval.
+	digest, definition, recreate, err := r.evalDigests(ctx, group)
 	if err != nil {
 		return "", false, err
 	}
 	key := project.FingerprintKey("eval", group.Name)
-	if prior := r.ec.getEnvValue(ctx, key); prior != "" && prior != digest {
-		recreate = true
-	}
 
 	// Building the request is also what checks the declaration against the
 	// dataset's columns, so it happens before the reuse decision: a dataset can
@@ -533,13 +651,15 @@ func (r *evalReconciler) EnsureEval(
 			// either of them can reach the service.
 			r.pushMutable(ctx, cached, group, remote)
 
-			// Record the digest on reuse as well, otherwise an eval deployed
+			// Record the definition on reuse as well, otherwise an eval deployed
 			// before fingerprinting existed never establishes a baseline and
-			// later edits go undetected.
-			r.ec.remember(ctx, key, digest)
+			// later edits go undetected. The identity digest is recorded beside
+			// it, which is what recognizes this declaration after a rename.
+			r.ec.remember(ctx, key, definition)
 			r.ec.remember(ctx, idKey("eval", group.Name), cached)
 			r.ec.remember(ctx, digestIDKey(digest), cached)
 			r.ec.remember(ctx, envKeyEvalID, cached)
+			r.claim(cached)
 			return cached, false, nil
 		}
 	}
@@ -548,7 +668,7 @@ func (r *evalReconciler) EnsureEval(
 	if err != nil {
 		return "", false, err
 	}
-	r.ec.remember(ctx, key, digest)
+	r.ec.remember(ctx, key, definition)
 	r.ec.remember(ctx, idKey("eval", group.Name), created.ID)
 	r.ec.remember(ctx, digestIDKey(digest), created.ID)
 	// EVAL_ID stays the last-deployed eval. Nothing reads it to decide which
@@ -556,6 +676,7 @@ func (r *evalReconciler) EnsureEval(
 	// which declaration it belongs to; it is here for anything outside this
 	// extension that wants the id of what was just deployed.
 	r.ec.remember(ctx, envKeyEvalID, created.ID)
+	r.claim(created.ID)
 	return created.ID, true, nil
 }
 
@@ -571,6 +692,12 @@ func (r *evalReconciler) adoptRenamed(
 ) (string, error) {
 	id := r.ec.getEnvValue(ctx, digestIDKey(digest))
 	if id == "" {
+		return "", nil
+	}
+	if r.claimed[id] {
+		// Another declaration in this same file already settled on it. Adopting
+		// it here would rename that eval and leave both declarations sharing
+		// one id and one run history, which is worse than creating a second.
 		return "", nil
 	}
 	remote, err := r.ec.evalClient.GetOpenAIEval(ctx, id)

@@ -4,6 +4,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -11,7 +12,6 @@ import (
 	"azureaieval/internal/messages"
 	"azureaieval/internal/pkg/eval_api"
 
-	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 )
 
@@ -153,10 +153,28 @@ func newRunShowCommand() *cobra.Command {
 			// answer.
 			gateOnStatus := wait
 			if wait {
-				run, err = ec.pollRun(ctx, evalID, run.ID, cmd.OutOrStdout(), isJSON(cmd))
-				if err != nil {
-					return err
+				// Into a second variable: pollRun answers the budget with a nil
+				// run, and the run read above is what still names it.
+				final, pollErr := ec.pollRun(ctx, evalID, run.ID, cmd.OutOrStdout(), isJSON(cmd))
+				if errors.Is(pollErr, errWaitBudgetSpent) {
+					// The wait ran out; the run is still going server-side.
+					// `run start` answers this with a reattach line, and a gate
+					// with a refusal rather than a silent pass. Reattaching is
+					// what this command is, so it says the same things rather
+					// than surfacing the sentinel's own text.
+					if threshold.set {
+						return messages.GateOutlivedTheWait(run.ID, waitBudget)
+					}
+					if isJSON(cmd) {
+						return emitJSON(cmd.OutOrStdout(), run)
+					}
+					fmt.Fprint(cmd.OutOrStdout(), messages.WaitBudgetSpent(run.ID, waitBudget))
+					return nil
 				}
+				if pollErr != nil {
+					return pollErr
+				}
+				run = final
 			}
 
 			// The spec puts --fail-on on the commands that wait. Gating a run
@@ -180,15 +198,19 @@ func newRunShowCommand() *cobra.Command {
 			}
 
 			out := cmd.OutOrStdout()
-			fmt.Fprint(out, messages.RunHeading(run.ID))
-			fmt.Fprint(out, messages.RunNameLine(run.Name))
-			fmt.Fprint(out, messages.RunStatusDetail(run.Status))
-			if counts := summarizeCounts(run.ResultCounts); counts != "" {
-				fmt.Fprint(out, messages.RunResultsLine(counts))
+			if err := emitDetail(out, []field{
+				{"Run", run.ID},
+				{"Name", run.Name},
+				// emitDetail drops an empty value, and status is `omitempty` on
+				// the wire. Reporting the status is what this command is for, so
+				// a run the service sent none for says that rather than losing
+				// the row and reading as a renderer that forgot it.
+				{"Status", reportedStatus(run.Status)},
+				{"Results", summarizeCounts(run.ResultCounts)},
+			}); err != nil {
+				return err
 			}
-			if url := runLink(run.ReportURL, run.PortalURL); url != "" {
-				fmt.Fprint(out, messages.RunReportLine(color.CyanString(url)))
-			}
+			writePortalLink(out, runLink(run.ReportURL, run.PortalURL))
 			if gateOnStatus {
 				if err := runCompleted(run); err != nil {
 					return err
@@ -215,6 +237,18 @@ func firstArg(args []string) string {
 		return args[0]
 	}
 	return ""
+}
+
+// reportedStatus names a status the service did not send.
+//
+// `status` is omitempty on the wire, and the detail view drops an empty value.
+// Saying the service reported none is information; dropping the row looks like
+// the renderer forgot it.
+func reportedStatus(status string) string {
+	if status == "" {
+		return "not reported"
+	}
+	return status
 }
 
 func newRunCancelCommand() *cobra.Command {

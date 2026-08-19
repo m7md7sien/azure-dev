@@ -4,6 +4,8 @@
 package project
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -63,8 +65,8 @@ func AgentInstructionsFromProject(
 		return "", "", err
 	}
 
-	configDir := filepath.Join(
-		proj.GetPath(), serviceRelativeDir(svc), agentConfigsDir, agentBaselineDir)
+	serviceRoot := baseDirUnder(proj.GetPath(), svc)
+	configDir := filepath.Join(serviceRoot, agentConfigsDir, agentBaselineDir)
 
 	data, err := os.ReadFile(filepath.Join(configDir, agentMetadataFile)) //nolint:gosec // under the project
 	if err != nil {
@@ -88,7 +90,17 @@ func AgentInstructionsFromProject(
 	// The pointer comes out of the checkout, so it carries the checkout's
 	// trust. Left alone, an absolute path or one climbing out with `..` reads a
 	// file the project does not contain and sends it on as agent instructions.
-	if !withinDir(proj.GetPath(), instructionPath) {
+	//
+	// Contained to the project, so any layout inside it a writer chooses still
+	// resolves -- unless the service itself is declared outside the project,
+	// which azd supports through an absolute `project:`. The project is then no
+	// boundary for it at all, and its own directory is the one the metadata was
+	// read from.
+	root := proj.GetPath()
+	if root == "" || !liesWithin(root, serviceRoot) {
+		root = serviceRoot
+	}
+	if !withinDir(root, instructionPath) {
 		return "", "", messages.InstructionFileOutsideProject(
 			filepath.Join(configDir, agentMetadataFile), meta.InstructionFile)
 	}
@@ -105,9 +117,34 @@ func AgentInstructionsFromProject(
 
 // withinDir reports whether path resolves to somewhere inside root.
 //
-// Compared after cleaning both, so `..` segments are resolved before the
-// question is asked rather than matched as text.
+// Asked twice: once of the path as written, and once of what it resolves to.
+// The read that follows this check follows links, so a link committed to the
+// repository would otherwise satisfy the written form while naming a file the
+// project does not contain — the same escape `..` is refused for, needing no
+// more privilege to commit.
 func withinDir(root, path string) bool {
+	if !liesWithin(root, path) {
+		return false
+	}
+
+	realRoot, rootErr := filepath.EvalSymlinks(root)
+	realPath, pathErr := filepath.EvalSymlinks(path)
+	if rootErr != nil || pathErr != nil {
+		// Resolution failing is not the same as there being nothing to
+		// resolve. A Windows junction is the difference: Go reads it as an
+		// irregular file rather than a link, so EvalSymlinks refuses the path
+		// while the OS walks the read straight through it. Only a path that is
+		// genuinely absent is let past, and the read reports that as missing
+		// rather than as an escape.
+		_, lstatErr := os.Lstat(path)
+		return errors.Is(lstatErr, fs.ErrNotExist)
+	}
+	return liesWithin(realRoot, realPath)
+}
+
+// liesWithin compares two paths as text, after cleaning both so that `..`
+// segments are resolved before the question is asked rather than matched.
+func liesWithin(root, path string) bool {
 	rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(path))
 	if err != nil {
 		return false

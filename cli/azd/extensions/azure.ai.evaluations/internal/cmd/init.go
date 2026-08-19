@@ -514,9 +514,9 @@ func (s scaffold) nextSteps(deployCmd string) []string {
 		// One command produces both, which is the whole point of the composite.
 		steps = append(steps, s.generateCommand(""))
 	case s.generateDataset:
-		steps = append(steps, s.generateCommand("--dataset --dataset-name "+s.datasetName))
+		steps = append(steps, s.generateCommand("--dataset --dataset-name "+quoteForShell(s.datasetName)))
 	case s.generateRubric:
-		steps = append(steps, s.generateCommand("--evaluator --evaluator-name "+s.rubricName))
+		steps = append(steps, s.generateCommand("--evaluator --evaluator-name "+quoteForShell(s.rubricName)))
 	}
 	if len(steps) == 0 {
 		// `azd up` reads azure.yaml, which already $refs the configuration
@@ -547,40 +547,28 @@ func (s scaffold) withPath(step string) string {
 // argument.
 //
 // `--path "./team evals"` is the difference between a printed step that runs
-// and one that resolves ./team and reports the configuration missing. That is
-// the case worth getting right, and double quotes are what cmd, PowerShell,
-// bash and zsh all read the same way for a path containing spaces.
-//
-// A path containing $ or a backtick has no portable answer: double quotes stop
-// neither from expanding in bash, zsh or PowerShell, and single quotes -- which
-// would -- are literal only on the POSIX shells. Such a path is wrapped anyway,
-// because one argument that may expand still beats two that certainly break,
-// and this line is printed for a person to read rather than executed here.
-//
-// Backslashes are left alone: C:\Users\Me\My Evals has to come back out as
-// itself, and doubling them would be right for bash and wrong for the two
-// shells most likely to be reading a path that looks like that.
+// and one that resolves ./team and reports the configuration missing. The rule
+// lives in messages, beside the suggested commands that need the same thing.
 func quoteForShell(v string) string {
-	if v == "" {
-		return `""`
-	}
-	if !strings.ContainsAny(v, " \t\n\"'`$&|;<>()*?[]#~!") {
-		return v
-	}
-	return `"` + strings.ReplaceAll(v, `"`, `\"`) + `"`
+	return messages.ShellArg(v)
 }
 
 // generateCommand builds a `generate` invocation that runs as printed.
+//
+// Every interpolated value is quoted, not just the path: --name is free-form
+// and becomes the dataset name, and a target or a model deployment can carry a
+// space too. Unquoted, `--dataset-name my eval` passed `my` and left `eval` as
+// a positional argument that `generate` refuses without naming the cause.
 func (s scaffold) generateCommand(what string) string {
 	cmd := "azd ai eval generate"
 	if what != "" {
 		cmd += " " + what
 	}
 	if s.target != "" {
-		cmd += " --target " + s.target
+		cmd += " --target " + quoteForShell(s.target)
 	}
 	if s.judgeModel != "" {
-		cmd += " --generation-model " + s.judgeModel
+		cmd += " --generation-model " + quoteForShell(s.judgeModel)
 	}
 	return s.withPath(cmd)
 }

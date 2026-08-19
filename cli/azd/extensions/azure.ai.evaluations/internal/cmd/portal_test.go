@@ -38,7 +38,7 @@ func TestWritePortalLink_SilentWithoutAURL(t *testing.T) {
 	assert.Empty(t, buf.String())
 }
 
-// Colour is pinned off for the rest of the package, which leaves nothing
+// Color is pinned off for the rest of the package, which leaves nothing
 // exercising the branch that actually runs in a terminal. The escape codes have
 // to wrap the URL and nothing else: one leaking into the label, or past the
 // newline, follows the link into whatever a reader pastes it in.
@@ -97,7 +97,8 @@ func TestPortalRunURLShape(t *testing.T) {
 
 // A run has one destination. The service's report_url and the portal URL the
 // extension builds resolve to the same page, and printing both put two labels
-// on it with no rule a reader could infer.
+// on it with no rule a reader could infer. One label, and it is the one every
+// other view uses.
 func TestRenderRunPrintsOneLink(t *testing.T) {
 	run := &eval_api.OpenAIEvalRun{
 		ID:        "evalrun_1",
@@ -110,10 +111,10 @@ func TestRenderRunPrintsOneLink(t *testing.T) {
 	require.NoError(t, renderRun(&buf, run, nil))
 
 	out := buf.String()
-	assert.Contains(t, out, "Report: https://service.example/report/1",
+	assert.Contains(t, out, "Portal: https://service.example/report/1",
 		"the service's url wins where it sent one")
-	assert.NotContains(t, out, "Portal: ",
-		"the second label named the same destination")
+	assert.Equal(t, 1, strings.Count(out, "Portal: "),
+		"a second label would name the same destination")
 	assert.NotContains(t, out, run.PortalURL)
 }
 
@@ -129,7 +130,7 @@ func TestRenderRunFallsBackToTheBuiltLink(t *testing.T) {
 	var buf bytes.Buffer
 	require.NoError(t, renderRun(&buf, run, nil))
 
-	assert.Contains(t, buf.String(), "Report: "+run.PortalURL)
+	assert.Contains(t, buf.String(), "Portal: "+run.PortalURL)
 }
 
 // A run with neither prints no link rather than an empty label.

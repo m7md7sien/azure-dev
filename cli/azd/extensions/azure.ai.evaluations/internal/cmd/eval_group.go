@@ -78,6 +78,9 @@ func newEvalCreateCommand() *cobra.Command {
 			}
 
 			reconciler := &evalReconciler{ec: ec}
+			// Every eval the file declares, not only the one being created: an
+			// eval another declaration already owns must not be adopted here.
+			reconciler.ReserveDeclared(ctx, cfg.Evals)
 			out := cmd.OutOrStdout()
 
 			// Before anything is pushed. Publishing is not free -- a dataset

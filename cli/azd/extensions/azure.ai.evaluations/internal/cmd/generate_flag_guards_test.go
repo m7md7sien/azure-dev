@@ -6,6 +6,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -124,5 +125,79 @@ func TestOutputDirAloneIsStillAccepted(t *testing.T) {
 	if err != nil {
 		assert.NotContains(t, err.Error(), "nothing to write to",
 			"an output directory without --no-wait must not be refused")
+	}
+}
+
+// --wait says the default out loud, so it has to be accepted; asking for both
+// at once says two things and has to be refused, as it is on `run start`.
+func TestWaitAndNoWaitContradictEachOther(t *testing.T) {
+	err := runGenerate(t, "--dataset", "--dataset-name", "ds", "--wait", "--no-wait")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no-wait")
+	assert.Contains(t, err.Error(), "wait")
+}
+
+// And --wait on its own is not a refusal, whatever else the run goes on to do.
+func TestWaitAloneIsAccepted(t *testing.T) {
+	err := runGenerate(t, "--dataset", "--dataset-name", "ds", "--wait")
+
+	if err != nil {
+		assert.NotContains(t, err.Error(), "--wait",
+			"--wait names the default, so it must not be refused")
+	}
+}
+
+// `--wait=false` is a legal pflag spelling and means what --no-wait means.
+// Parsed into a variable nobody reads, it was accepted and then did the
+// opposite of what it said: the command waited.
+func TestWaitFalseMeansTheSameAsNoWait(t *testing.T) {
+	withNoWait := runGenerate(t,
+		"--dataset", "--dataset-name", "ds", "--no-wait", "--output-dir", t.TempDir())
+	withWaitFalse := runGenerate(t,
+		"--dataset", "--dataset-name", "ds", "--wait=false", "--output-dir", t.TempDir())
+
+	require.Error(t, withNoWait, "the guard this compares against has to still fire")
+	require.Error(t, withWaitFalse,
+		"--wait=false asks for the same thing --no-wait asks for")
+	assert.Equal(t, withNoWait.Error(), withWaitFalse.Error(),
+		"the two spellings must reach the same decision")
+}
+
+// One command builds two artifacts, so an --output-dir naming a file gives both
+// of them the same path. The extension is recognized for either kind and the
+// two jobs run concurrently, so two billed jobs would leave one file and a
+// configuration claiming a dataset and an evaluator that are the same bytes.
+func TestOneOutputFileForTwoArtifactsIsRefused(t *testing.T) {
+	for _, named := range []string{"both.jsonl", "both.json"} {
+		t.Run(named, func(t *testing.T) {
+			err := runGenerate(t, "--output-dir", filepath.Join(t.TempDir(), named))
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "--output-dir")
+			assert.Contains(t, err.Error(), "--dataset",
+				"the refusal has to name the way to generate one of them")
+		})
+	}
+}
+
+// Naming one artifact is what makes a file path unambiguous, so it stays
+// accepted.
+func TestOneOutputFileForOneArtifactIsAccepted(t *testing.T) {
+	err := runGenerate(t, "--dataset", "--dataset-name", "ds",
+		"--output-dir", filepath.Join(t.TempDir(), "rows.jsonl"))
+
+	if err != nil {
+		assert.NotContains(t, err.Error(), "names a file",
+			"one artifact can be written to one file")
+	}
+}
+
+// A directory is what both artifacts share without colliding.
+func TestADirectoryForTwoArtifactsIsAccepted(t *testing.T) {
+	err := runGenerate(t, "--output-dir", t.TempDir())
+
+	if err != nil {
+		assert.NotContains(t, err.Error(), "names a file")
 	}
 }

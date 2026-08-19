@@ -43,9 +43,14 @@ const (
 	GenerateFromFile   = "file"
 )
 
-// GenerateSources is what --from accepts, in help order.
+// GenerateSources is what --from offers, in help order.
+//
+// `file` is missing on purpose. It is a source the command recognizes so that
+// asking for it earns the remedy rather than a list, but generate never builds
+// from one, so offering it in help would advertise a value the same command
+// guarantees to refuse.
 var GenerateSources = []string{
-	GenerateFromTraces, GenerateFromAgent, GenerateFromPrompt, GenerateFromFile,
+	GenerateFromTraces, GenerateFromAgent, GenerateFromPrompt,
 }
 
 // ValidateGenerateSource rejects a --from value the service has no path for.
@@ -82,6 +87,12 @@ func ArtifactPath(baseDir, outputDir, resourceName, ext string) string {
 		return candidate
 	}
 	return filepath.Join(candidate, resourceName+ext)
+}
+
+// OutputDirNamesAFile reports an --output-dir that names a file rather than a
+// directory, which is a thing only one artifact can be written to.
+func OutputDirNamesAFile(outputDir string) bool {
+	return looksLikeFile(outputDir, "")
 }
 
 // looksLikeFile treats a trailing recognized extension as an explicit file path.
