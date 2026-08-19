@@ -40,14 +40,39 @@ const EvalConfigBase = "azure.eval.yaml"
 // not silently grow a second configuration beside it.
 const LegacyEvalConfigBase = "eval.yaml"
 
-// EvalConfigPath is the configuration file inside an eval directory. It is
-// exported for error messages and for the azure.yaml $ref; readers should
-// prefer OpenEvalConfig.
-func EvalConfigPath(evalDir string) string {
-	return filepath.Join(evalDir, EvalConfigBase)
+// EvalConfigPath is the configuration file at a location. It is exported for
+// error messages and for the azure.yaml $ref; readers should prefer
+// OpenEvalConfig.
+//
+// A location is normally the eval directory, and the file inside it is named by
+// convention. It may also be the file itself, because azure.yaml's `$ref` names
+// one by name rather than by directory: a project is free to declare
+// `./config/nightly.yaml`, and looking for `azure.eval.yaml` beside it would
+// report the configuration missing while `azd up` deployed it.
+func EvalConfigPath(location string) string {
+	if namesAFile(location) {
+		return location
+	}
+	return filepath.Join(location, EvalConfigBase)
 }
 
-// ResolveEvalConfigPath is the configuration this directory actually holds:
+// EvalDirOf is the directory a location's relative paths resolve against.
+func EvalDirOf(location string) string {
+	if namesAFile(location) {
+		return filepath.Dir(location)
+	}
+	return location
+}
+
+// namesAFile reports whether a location is the configuration file rather than
+// the directory holding it. A path that does not exist is read as a directory,
+// which is what `init` is given before it writes anything.
+func namesAFile(location string) bool {
+	info, err := os.Stat(location)
+	return err == nil && !info.IsDir()
+}
+
+// ResolveEvalConfigPath is the configuration this location actually holds:
 // the current name, or the legacy one when that is the only file there.
 //
 // It refuses a directory holding both, rather than leaving that to the caller.
@@ -56,21 +81,24 @@ func EvalConfigPath(evalDir string) string {
 // while `run`, `init` and `generate` all refused. Returning an error is what
 // makes the guard unavoidable: there is no longer a way to ask this question
 // and not be told.
-func ResolveEvalConfigPath(evalDir string) (string, error) {
-	if err := checkOneConfig(evalDir); err != nil {
+func ResolveEvalConfigPath(location string) (string, error) {
+	if err := checkOneConfig(location); err != nil {
 		return "", err
 	}
-	return resolvedConfigPath(evalDir), nil
+	return resolvedConfigPath(location), nil
 }
 
 // resolvedConfigPath is the naming rule on its own, for the two functions that
 // have already applied the guard.
-func resolvedConfigPath(evalDir string) string {
-	current := EvalConfigPath(evalDir)
+func resolvedConfigPath(location string) string {
+	if namesAFile(location) {
+		return location
+	}
+	current := EvalConfigPath(location)
 	if _, err := os.Stat(current); err == nil {
 		return current
 	}
-	legacy := filepath.Join(evalDir, LegacyEvalConfigBase)
+	legacy := filepath.Join(location, LegacyEvalConfigBase)
 	if _, err := os.Stat(legacy); err == nil {
 		return legacy
 	}
@@ -81,10 +109,14 @@ func resolvedConfigPath(evalDir string) string {
 //
 // Preferring one silently is the dangerous answer: `azure.yaml` `$ref`s a
 // single file by name, so the CLI would edit one configuration while `azd up`
-// deployed the other, and nothing would say so.
-func checkOneConfig(evalDir string) error {
-	current := EvalConfigPath(evalDir)
-	legacy := filepath.Join(evalDir, LegacyEvalConfigBase)
+// deployed the other, and nothing would say so. A location that already names
+// the file has nothing to disambiguate.
+func checkOneConfig(location string) error {
+	if namesAFile(location) {
+		return nil
+	}
+	current := EvalConfigPath(location)
+	legacy := filepath.Join(location, LegacyEvalConfigBase)
 	if _, err := os.Stat(current); err != nil {
 		return nil
 	}

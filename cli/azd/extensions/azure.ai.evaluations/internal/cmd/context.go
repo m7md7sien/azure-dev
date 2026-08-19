@@ -471,12 +471,16 @@ func evalDirCascade(
 	return project.DefaultEvalDir, nil
 }
 
-// declaredEvalDir reads the directory azure.yaml's `$ref` points at.
+// declaredEvalConfig reads the location azure.yaml's `$ref` points at.
 //
 // The service entry is the project's own statement of where its evaluation
-// configuration lives, and `azd up` has always deployed from it. Returns empty
-// outside an azd project, or when nothing declares the eval host.
-func declaredEvalDir(ctx context.Context, azdClient *azdext.AzdClient) string {
+// configuration lives, and `azd up` has always deployed from it. The full path
+// is returned rather than its directory: the `$ref` names a file, and a project
+// declaring `./config/nightly.yaml` means that file, not whatever
+// `azure.eval.yaml` happens to sit beside it.
+//
+// Returns empty outside an azd project, or when nothing declares the eval host.
+func declaredEvalConfig(ctx context.Context, azdClient *azdext.AzdClient) string {
 	if azdClient == nil {
 		return ""
 	}
@@ -496,9 +500,7 @@ func declaredEvalDir(ctx context.Context, azdClient *azdext.AzdClient) string {
 		if ref == "" {
 			continue
 		}
-		if dir := filepath.Dir(filepath.FromSlash(ref)); dir != "" && dir != "." {
-			return dir
-		}
+		return filepath.Clean(filepath.FromSlash(ref))
 	}
 	return ""
 }
@@ -511,7 +513,7 @@ func (ec *evalContext) evalDir(ctx context.Context, flagValue string) (string, e
 		}
 		return readRecordedEvalPath(ctx, ec.azdClient, ec.envName)
 	}, func() string {
-		return declaredEvalDir(ctx, ec.azdClient)
+		return declaredEvalConfig(ctx, ec.azdClient)
 	})
 }
 
@@ -556,7 +558,7 @@ func resolveEvalDir(ctx context.Context, flagValue string) (string, error) {
 			return ""
 		}
 		defer azdClient.Close()
-		return declaredEvalDir(ctx, azdClient)
+		return declaredEvalConfig(ctx, azdClient)
 	})
 }
 
