@@ -1830,14 +1830,6 @@ func AlreadyDeclaresServiceLine(rootConfig, service string) string {
 	return fmt.Sprintf("  %-33s already declares service '%s'\n", rootConfig, service)
 }
 
-// RepointedServiceLine reports a declared service moved to this configuration.
-//
-// Said rather than done quietly: the entry decides what `azd up` deploys, and a
-// caller who did not expect their project file to change should see that it did.
-func RepointedServiceLine(rootConfig, service, configPath string) string {
-	return fmt.Sprintf("  %-33s pointed service '%s' at %s\n", rootConfig, service, configPath)
-}
-
 // FirstNextStep opens the list of commands to run after a scaffold.
 func FirstNextStep(step string) string {
 	return fmt.Sprintf("\nNext: %s\n", step)
@@ -2130,6 +2122,36 @@ func InstructionFileUnreadable(metadataPath, named string, err error) error {
 	return fmt.Errorf(
 		"%s names instruction_file %q, which could not be read: %w",
 		metadataPath, named, err)
+}
+
+// ListingTruncated reports a page walk that stopped before the end.
+//
+// Worth saying out loud rather than logging: a short evaluator listing resolves
+// the latest version from the pages that arrived, so a truncated one can pick
+// an older version and report nothing unusual.
+func ListingTruncated(pages int) error {
+	return fmt.Errorf(
+		"stopped reading the listing after %d pages, so it may be incomplete", pages)
+}
+
+// ServiceRefPointsElsewhere reports an existing service entry wired to a
+// different configuration than the one just scaffolded.
+func ServiceRefPointsElsewhere(serviceName, have, want string) error {
+	return fmt.Errorf(
+		"service %q already points at %s, and the configuration just written is "+
+			"%s; point the service's $ref at the one you want, or scaffold with "+
+			"--path %s", serviceName, have, want, have)
+}
+
+// InstructionFileOutsideProject reports metadata pointing outside the project.
+//
+// The pointer is read from a file in the checkout, so it is only as trustworthy
+// as the checkout: an absolute path or one climbing out with `..` would read
+// something the project does not contain and send it on as agent instructions.
+func InstructionFileOutsideProject(metadataPath, named string) error {
+	return fmt.Errorf(
+		"%s names instruction_file %q, which is outside the project; "+
+			"name a path inside it", metadataPath, named)
 }
 
 // FromNotASource reports a --from value the generation service has no path for.

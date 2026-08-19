@@ -271,9 +271,6 @@ func newInitCommand() *cobra.Command {
 				fmt.Fprint(out, messages.AddedServiceLine(rootConfigName, serviceName))
 			case wiringPresent:
 				fmt.Fprint(out, messages.AlreadyDeclaresServiceLine(rootConfigName, serviceName))
-			case wiringUpdated:
-				fmt.Fprint(out, messages.RepointedServiceLine(
-					rootConfigName, serviceName, filepath.ToSlash(configPath)))
 			}
 
 			// Only what was actually scheduled is offered. Suggesting
@@ -627,7 +624,6 @@ const aiProjectHost = "azure.ai.project"
 const (
 	wiringAdded   = "added"   // the service was added to the project
 	wiringPresent = "present" // an eval service was already declared
-	wiringUpdated = "updated" // a declared service was repointed at this configuration
 )
 
 // readAzdProject returns the project, without changing it.
@@ -768,23 +764,19 @@ func ensureRootEvalService(
 		return "", messages.NoAzdProject()
 	}
 
-	wantRef := "./" + filepath.ToSlash(configPath)
-
-	// A service already pointing at this configuration is left alone: re-adding
-	// it would deploy the same evals twice.
+	// A service already pointing at this configuration is left alone:
+	// re-adding it would deploy the same evals twice.
 	//
-	// One pointing somewhere else is not left alone. `init --path` moves the
-	// configuration, and an entry still naming the old file is what `azd up`
-	// deploys and what every command reads on a machine that never ran this
-	// init -- the recorded path is in the azd environment, and that does not
-	// travel with the repository. AddService reloads from disk and replaces the
-	// entry, so writing it again is how it gets repointed.
-	outcome := wiringAdded
+	// Pointing at a different one is not the same thing. Matching on name and
+	// host alone reported the wiring present after `init --path` moved the
+	// configuration, and `azd up` went on deploying the file that was left
+	// behind -- the scaffold the reader was looking at was never deployed.
+	wantRef := "./" + filepath.ToSlash(configPath)
 	if svc, ok := resp.GetProject().GetServices()[serviceName]; ok && svc.GetHost() == project.EvalHost {
-		if serviceRef(svc) == wantRef {
-			return wiringPresent, nil
+		if have := serviceConfigRef(svc); have != "" && !sameRefTarget(have, wantRef) {
+			return "", messages.ServiceRefPointsElsewhere(serviceName, have, wantRef)
 		}
-		outcome = wiringUpdated
+		return wiringPresent, nil
 	}
 
 	props, err := structpb.NewStruct(map[string]any{
@@ -805,17 +797,24 @@ func ensureRootEvalService(
 	if err != nil {
 		return "", messages.AddingServiceTo(rootConfigName, err)
 	}
-	return outcome, nil
+	return wiringAdded, nil
 }
 
-// serviceRef is the `$ref` an existing service entry carries, or empty.
-func serviceRef(svc *azdext.ServiceConfig) string {
+// serviceConfigRef reads the $ref a service entry was authored with, or empty
+// when it holds its configuration inline.
+func serviceConfigRef(svc *azdext.ServiceConfig) string {
 	props := svc.GetAdditionalProperties()
 	if props == nil {
 		return ""
 	}
 	ref, _ := props.AsMap()["$ref"].(string)
 	return ref
+}
+
+// sameRefTarget compares two $ref values as paths rather than as text, so
+// `evals/azure.eval.yaml` and `./evals/azure.eval.yaml` are one answer.
+func sameRefTarget(a, b string) bool {
+	return filepath.Clean(filepath.FromSlash(a)) == filepath.Clean(filepath.FromSlash(b))
 }
 
 // evalServiceUses orders the eval after the things it reads.
