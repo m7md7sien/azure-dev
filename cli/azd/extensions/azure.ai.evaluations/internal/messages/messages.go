@@ -382,9 +382,22 @@ func NoRowsScored() string {
 	return "\nNo rows have been scored yet.\n"
 }
 
-// SamplesFailedAtLeastOne closes a --failed-only listing with its count.
-func SamplesFailedAtLeastOne(samples int) string {
-	return fmt.Sprintf("\n%d sample(s) failed at least one evaluator.\n", samples)
+// SamplesNeedingALook closes a --failed-only listing, holding the rows that
+// failed apart from the rows nothing managed to score.
+//
+// One count covering both contradicted the totals printed two lines above it,
+// which is what a reader compares it with: a run reporting 5 failed and 8
+// errored closed with "13 sample(s) failed at least one evaluator".
+func SamplesNeedingALook(failed, unscored int) string {
+	if unscored == 0 {
+		return fmt.Sprintf("\n%d sample(s) failed at least one evaluator.\n", failed)
+	}
+	if failed == 0 {
+		return fmt.Sprintf("\n%d sample(s) could not be scored.\n", unscored)
+	}
+	return fmt.Sprintf(
+		"\n%d sample(s) failed at least one evaluator, and %d could not be scored.\n",
+		failed, unscored)
 }
 
 // GeneratedNameNotAFileName reports a generated artifact name that would not
