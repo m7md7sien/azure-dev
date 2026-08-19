@@ -43,8 +43,16 @@ type DatasetDecl struct {
 //
 // Source names a `.json` file holding a rubric: a list of weighted scoring
 // dimensions.
+//
+// Ref carries the `$ref` an author wrote. Commands that use the configuration
+// never see it -- resolution has already replaced the entry with the file's
+// content by then -- but the commands that read, modify and save the file do,
+// and modelling it is what lets the include survive being written back. Name is
+// omitempty for the same reason: an entry that is only a `$ref` has no name of
+// its own until the file it names supplies one.
 type EvaluatorDecl struct {
-	Name    string `yaml:"name"              json:"name"`
+	Ref     string `yaml:"$ref,omitempty"    json:"$ref,omitempty"`
+	Name    string `yaml:"name,omitempty"    json:"name,omitempty"`
 	Source  string `yaml:"source,omitempty"  json:"source,omitempty"`
 	Version string `yaml:"version,omitempty" json:"version,omitempty"`
 }

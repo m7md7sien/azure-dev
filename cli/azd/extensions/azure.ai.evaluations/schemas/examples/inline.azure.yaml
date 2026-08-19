@@ -17,6 +17,9 @@ services:
     evaluators:
       - name: support-agent-quality
         source: ./evaluators/support-agent-quality.json
+      # Or pulled in from its own file, the way agents and projects do it.
+      - $ref: ./evaluators/tone.yaml
+        name: tone
 
     evals:
       - name: support-agent-regression-eval

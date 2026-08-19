@@ -137,7 +137,7 @@ func newInitCommand() *cobra.Command {
 			// reporting it as created would claim a file it only added to.
 			_, configExistedErr := os.Stat(configPath)
 			configExisted := configExistedErr == nil
-			cfg, err := project.OpenEvalConfig(path)
+			cfg, err := project.OpenEvalConfigForEdit(path)
 			if err != nil {
 				return err
 			}
@@ -181,7 +181,7 @@ func newInitCommand() *cobra.Command {
 			}
 			defer unlockConfig()
 
-			cfg, err = project.OpenEvalConfig(path)
+			cfg, err = project.OpenEvalConfigForEdit(path)
 			if err != nil {
 				return err
 			}

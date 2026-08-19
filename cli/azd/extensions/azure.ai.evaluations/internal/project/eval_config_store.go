@@ -126,38 +126,69 @@ func checkOneConfig(location string) error {
 	return messages.AmbiguousEvalConfig(current, legacy)
 }
 
-// OpenEvalConfig reads the configuration under evalDir.
+// OpenEvalConfig reads the configuration at a location, with `$ref` includes
+// resolved. This is the reader for commands that *use* the configuration.
 //
 // A missing file returns (nil, nil): generate runs before init, so "no
 // configuration yet" is an ordinary state rather than a failure.
-func OpenEvalConfig(evalDir string) (*EvalConfig, error) {
-	if err := checkOneConfig(evalDir); err != nil {
+//
+// Commands that write the configuration back must use OpenEvalConfigForEdit
+// instead. Resolution and editing do not mix: what comes back here is the
+// configuration with every include spliced in, and saving that replaces the
+// author's `$ref` with its content.
+func OpenEvalConfig(location string) (*EvalConfig, error) {
+	return openEvalConfig(location, true)
+}
+
+// OpenEvalConfigForEdit reads the configuration exactly as written, leaving
+// `$ref` directives alone.
+//
+// `init` and `generate` read, modify and write the same file. Handing them a
+// resolved configuration and saving the result inlined the author's includes,
+// orphaned the files they named, and left the paths inside those files
+// resolving against the wrong directory -- a `source: ./quality.json` written
+// beside `evaluators/quality.yaml` came back pointing at the project root.
+// None of it was reported, because from the writer's point of view it had
+// simply saved what it read.
+func OpenEvalConfigForEdit(location string) (*EvalConfig, error) {
+	return openEvalConfig(location, false)
+}
+
+func openEvalConfig(location string, resolve bool) (*EvalConfig, error) {
+	if err := checkOneConfig(location); err != nil {
 		return nil, err
 	}
-	cfg, err := LoadEvalConfig(resolvedConfigPath(evalDir))
+	cfg, err := loadEvalConfig(resolvedConfigPath(location), resolve)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
 	}
 	return cfg, err
 }
 
-// LoadEvalConfig reads a configuration from an explicit path. The path is used
-// verbatim, relative to the process working directory — never re-rooted.
+// LoadEvalConfig reads a configuration from an explicit path, with `$ref`
+// includes resolved. The path is used verbatim, relative to the process working
+// directory — never re-rooted.
 //
 // Decoded strictly: a key this extension does not know is a typo, and reading
 // it as nothing leaves a configuration that looks fine and fails later
 // somewhere else. `agent:` written under `target:` instead of `type:`/`name:`
 // used to produce an empty target and a run that complained about the target.
 func LoadEvalConfig(path string) (*EvalConfig, error) {
+	return loadEvalConfig(path, true)
+}
+
+func loadEvalConfig(path string, resolve bool) (*EvalConfig, error) {
 	data, err := ReadFileNoBOM(path)
 	if err != nil {
 		return nil, messages.ReadingEvalConfig(path, err)
 	}
-	resolved, err := resolveConfigRefs(data, filepath.Dir(path), path)
-	if err != nil {
-		return nil, err
+	if resolve {
+		data, err = resolveConfigRefs(data, filepath.Dir(path), path)
+		if err != nil {
+			return nil, err
+		}
 	}
-	return DecodeEvalConfig(resolved, path)
+	return DecodeEvalConfig(data, path)
 }
 
 // resolveConfigRefs expands `$ref` includes before the strict decode.

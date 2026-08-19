@@ -81,10 +81,13 @@ func TestSourceDeclKeys(t *testing.T) {
 }
 
 // The catalogs are named, reusable assets. A dataset says where its rows come
-// from; an evaluator carries its definition, so it has no path of its own.
+// from. An evaluator may instead be pulled in with `$ref`, which is modelled
+// rather than only resolved so that a command which reads, modifies and saves
+// the file writes the author's include back out instead of inlining it.
 func TestCatalogKeys(t *testing.T) {
 	assert.ElementsMatch(t, []string{"name", "file", "version"}, yamlKeys(t, DatasetDecl{}))
-	assert.ElementsMatch(t, []string{"name", "source", "version"}, yamlKeys(t, EvaluatorDecl{}))
+	assert.ElementsMatch(t,
+		[]string{"$ref", "name", "source", "version"}, yamlKeys(t, EvaluatorDecl{}))
 }
 
 // The spec's casing table: eval.yaml uses the API's snake_case throughout, so

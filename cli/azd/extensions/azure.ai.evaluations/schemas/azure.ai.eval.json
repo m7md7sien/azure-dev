@@ -13,8 +13,13 @@
     },
     "evaluators": {
       "type": "array",
-      "description": "Catalog of named custom evaluators. Built-in evaluators are referenced straight from an eval and are never declared here.",
-      "items": { "$ref": "#/definitions/EvaluatorDecl" }
+      "description": "Catalog of named custom evaluators. An entry is a declaration, or a $ref to a file holding one. Built-in evaluators are referenced straight from an eval and are never declared here.",
+      "items": {
+        "oneOf": [
+          { "$ref": "#/definitions/EvaluatorDecl" },
+          { "$ref": "#/definitions/FileRef" }
+        ]
+      }
     },
     "evals": {
       "type": "array",
@@ -23,6 +28,18 @@
     }
   },
   "definitions": {
+    "FileRef": {
+      "type": "object",
+      "required": ["$ref"],
+      "additionalProperties": true,
+      "description": "Replace an inline definition with a reference to an external YAML or JSON file. Sibling properties on the same object act as overlay overrides on top of the loaded file. Cloned rather than referenced across extensions, following azure.ai.projects.",
+      "properties": {
+        "$ref": {
+          "type": "string",
+          "description": "Path to a YAML or JSON file containing the definition. Relative paths resolve from the file containing this $ref. Absolute paths are also accepted; remote URLs are not supported."
+        }
+      }
+    },
     "DatasetDecl": {
       "type": "object",
       "required": ["name"],

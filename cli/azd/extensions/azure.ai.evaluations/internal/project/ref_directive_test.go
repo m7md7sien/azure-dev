@@ -10,18 +10,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// `$ref` is a directive, and the strict decoder never sees one.
+// `$ref` decodes rather than being refused, and survives being written back.
 //
-// Resolution happens in LoadEvalConfig, which strips the directive once the
-// file it names has been spliced in. DecodeEvalConfig is the decoder underneath
-// that, so a `$ref` reaching it means resolution was skipped — and reporting it
-// as a mistyped key is the right answer, because a configuration that still
-// carries the directive has not been resolved and cannot deploy either.
+// It was a directive the strict decoder rejected, on the reasoning that one
+// reaching the decoder meant resolution had been skipped. That reasoning only
+// held while every reader resolved. The commands that read, modify and save the
+// file deliberately do not, because saving a resolved configuration inlines the
+// author's includes -- so the decoder has to carry the directive through
+// untouched instead of naming it a typo.
 //
-// This used to be the whole story: the service target resolved and this path did
-// not, so the same file deployed cleanly and then failed every CLI command.
-// TestRefResolvesOnTheCLIPathToo covers the resolved route.
-func TestTheStrictDecoderNeverSeesARefDirective(t *testing.T) {
+// TestRefResolvesOnTheCLIPathToo covers the resolved route;
+// TestEditingReadsLeaveIncludesAlone covers the round trip.
+func TestARefDirectiveDecodesAndSurvives(t *testing.T) {
 	withRef := []byte(`
 evaluators:
   - $ref: ./evaluators/quality.yaml
@@ -29,14 +29,16 @@ evals:
   - name: nightly
 `)
 
-	_, err := DecodeEvalConfig(withRef, "azure.eval.yaml")
+	cfg, err := DecodeEvalConfig(withRef, "azure.eval.yaml")
 
-	require.Error(t, err, "`azd up` resolves this include; the CLI reader does not")
-	assert.Contains(t, err.Error(), `unknown key "$ref"`,
-		"the asymmetry has to be visible in the message a reader gets")
+	require.NoError(t, err, "the editing readers hand this straight to the decoder")
+	require.Len(t, cfg.Evaluators, 1)
+	assert.Equal(t, "./evaluators/quality.yaml", cfg.Evaluators[0].Ref)
+	assert.Empty(t, cfg.Evaluators[0].Name,
+		"an entry that is only a $ref has no name until the file it names supplies one")
 
-	// The spelling that does work today, for contrast.
-	cfg, err := DecodeEvalConfig([]byte(`
+	// The spelling that needs no resolution at all.
+	cfg, err = DecodeEvalConfig([]byte(`
 evaluators:
   - name: quality
     source: ./evaluators/quality.json
@@ -46,4 +48,5 @@ evals:
 
 	require.NoError(t, err)
 	assert.Equal(t, "./evaluators/quality.json", cfg.Evaluators[0].Source)
+	assert.Empty(t, cfg.Evaluators[0].Ref)
 }

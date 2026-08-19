@@ -88,7 +88,7 @@ func updateCatalog(
 	}
 	defer unlock()
 
-	cfg, err := project.OpenEvalConfig(evalDir)
+	cfg, err := project.OpenEvalConfigForEdit(evalDir)
 	if err != nil {
 		return err
 	}
