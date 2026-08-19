@@ -250,13 +250,11 @@ func EvalConfigFromService(svc *azdext.ServiceConfig, projectRoot string) (*Eval
 
 	values := props.AsMap()
 	if projectRoot != "" {
-		// Noted before resolution, which drops the directive it is read from.
-		spliced := evaluatorsWrittenAsRefs(values)
 		resolved, err := foundry.ResolveFileRefs(values, projectRoot)
 		if err != nil {
 			return nil, messages.ResolvingServiceRefs(err)
 		}
-		nestSplicedRubrics(resolved, spliced)
+		nestSplicedRubrics(resolved)
 		values = resolved
 	}
 
