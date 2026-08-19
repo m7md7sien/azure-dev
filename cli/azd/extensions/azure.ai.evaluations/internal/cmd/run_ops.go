@@ -392,11 +392,12 @@ func sampleCount(counts *eval_api.EvalRunResultCounts) string {
 	return strconv.Itoa(counts.Total)
 }
 
-// runPassRate is the same passed/total the gate uses, so a row a reader gates
-// on cannot disagree with the gate.
+// runPassRate is the same scored pass rate the gate uses, so a row a reader
+// gates on cannot disagree with the gate.
 func runPassRate(counts *eval_api.EvalRunResultCounts) string {
-	if counts == nil || counts.Total == 0 {
+	rate, _, ok := scoredPassRate(counts)
+	if !ok {
 		return ""
 	}
-	return formatRate(counts.Passed, counts.Total)
+	return fmt.Sprintf("%.1f%%", rate*100)
 }

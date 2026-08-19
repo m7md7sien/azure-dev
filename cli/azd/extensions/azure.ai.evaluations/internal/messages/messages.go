@@ -199,14 +199,19 @@ func RunFinishedWithStatus(runID, status string) error {
 	return fmt.Errorf("run %s finished with status %s", runID, status)
 }
 
-// OverallPassRate reports the share of samples that passed every evaluator.
+// OverallPassRate reports the share of the rows an evaluator scored that passed
+// every evaluator.
 //
-// The parenthetical is the bare fraction the spec prints. Spelling out "samples
-// passed every evaluator" on every run reads as a caveat on the number rather
-// than a definition of it; the doc comment above is where that belongs.
-func OverallPassRate(rate string, passed, total int) string {
-	return fmt.Sprintf("\nOverall pass rate: %s  (%d/%d)\n",
-		rate, passed, total)
+// The denominator is named rather than left as a bare fraction. Rows nothing
+// could grade are outside it, so a run that errored on most of its samples can
+// report a high rate, and "of N scored" is what stops that reading as a verdict
+// on the whole run. It is also the figure `--fail-on pass-rate` compares.
+func OverallPassRate(rate string, passed, scored, unscored int) string {
+	if unscored > 0 {
+		return fmt.Sprintf("\nOverall pass rate: %s  (%d of %d scored; %d not scored)\n",
+			rate, passed, scored, unscored)
+	}
+	return fmt.Sprintf("\nOverall pass rate: %s  (%d/%d)\n", rate, passed, scored)
 }
 
 // SamplesErrored reports rows the run could not score at all.
@@ -398,6 +403,19 @@ func SamplesNeedingALook(failed, unscored int) string {
 	return fmt.Sprintf(
 		"\n%d sample(s) failed at least one evaluator, and %d could not be scored.\n",
 		failed, unscored)
+}
+
+// GateSawUnscoredRows warns that a pass-rate gate judged only part of the run.
+//
+// The rate excludes rows nothing could grade, so a run that errored on most of
+// its samples can clear a threshold on the few that survived. The gate is the
+// one place a pipeline is guaranteed to read, so it is said there rather than
+// left for someone to notice in the summary.
+func GateSawUnscoredRows(unscored, total int) error {
+	return fmt.Errorf(
+		"%d of %d samples were not scored, so the pass rate this gate read covers "+
+			"only the rest; use --fail-on any-failure to count them against the run",
+		unscored, total)
 }
 
 // GeneratedNameNotAFileName reports a generated artifact name that would not
