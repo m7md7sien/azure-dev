@@ -341,6 +341,13 @@ func Fingerprint(path string) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
+// FingerprintBytes hashes content that was never a file, which is how a rubric
+// written in the configuration gets the change detection a rubric file has.
+func FingerprintBytes(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
 // FingerprintGroup hashes an eval's own declaration.
 //
 // Change detection on upstream artifacts is not sufficient: editing a group's

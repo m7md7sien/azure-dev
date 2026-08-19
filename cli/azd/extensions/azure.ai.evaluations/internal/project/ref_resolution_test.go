@@ -50,6 +50,62 @@ evals:
 	assert.Equal(t, "./quality.json", cfg.Evaluators[0].Source)
 }
 
+// A `$ref` can name the rubric itself, not only a pointer to one.
+//
+// This is the shape the spec documents, and it works because resolution splices
+// the referenced file's keys into the entry: they have to land on fields of the
+// declaration or strict decoding rejects them. `definition` is that field.
+func TestRefCanNameTheRubricItself(t *testing.T) {
+	dir := t.TempDir()
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "evaluators"), 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "evaluators", "quality.json"),
+		[]byte(`{"name":"support-agent-quality",`+
+			`"definition":{"type":"rubric","dimensions":[{"name":"tone","weight":1}]}}`),
+		0o600))
+
+	path := filepath.Join(dir, "azure.eval.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(`
+evaluators:
+  - $ref: ./evaluators/quality.json
+
+evals:
+  - name: nightly
+    dataset: golden
+`), 0o600))
+
+	cfg, err := LoadEvalConfig(path)
+	require.NoError(t, err, "a rubric named by $ref has to decode")
+	require.Len(t, cfg.Evaluators, 1)
+	assert.Equal(t, "support-agent-quality", cfg.Evaluators[0].Name)
+	assert.Equal(t, "rubric", cfg.Evaluators[0].Definition["type"],
+		"the rubric travels with the declaration, so there is no second file to find")
+	assert.Empty(t, cfg.Evaluators[0].Source,
+		"a definition in hand is not a path to resolve against anything")
+}
+
+// `definition` is one named key rather than a catch-all, so a misspelling in an
+// evaluator entry is still an error naming the key.
+//
+// A catch-all would have absorbed it and published it to the service as part of
+// the rubric, which is a far worse way to find out.
+func TestAMisspelledEvaluatorKeyIsStillRejected(t *testing.T) {
+	dir := t.TempDir()
+
+	path := filepath.Join(dir, "azure.eval.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(`
+evaluators:
+  - nmae: support-agent-quality
+    definition:
+      type: rubric
+`), 0o600))
+
+	_, err := LoadEvalConfig(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "nmae", "the error has to name the key that is wrong")
+}
+
 // Sibling keys overlay the loaded file, which is what lets a name live in the
 // configuration while the definition it names lives beside the code it grades.
 func TestRefSiblingKeysOverlayTheLoadedFile(t *testing.T) {

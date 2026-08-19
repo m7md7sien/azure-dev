@@ -330,6 +330,18 @@ func TestValidate_Rejects(t *testing.T) {
 			wantErr: "cannot be set with `source`",
 		},
 		{
+			name: "rubric both named and written out",
+			body: "evaluators:\n  - name: q\n    source: ./q.json\n" +
+				"    definition:\n      dimensions: []\n" + oneEval,
+			wantErr: "both give the rubric",
+		},
+		{
+			name: "version pinned alongside a definition",
+			body: "evaluators:\n  - name: q\n    version: \"3\"\n" +
+				"    definition:\n      dimensions: []\n" + oneEval,
+			wantErr: "cannot be set with `definition`",
+		},
+		{
 			name: "no evals",
 			body: "datasets:\n  - name: d\n",
 			// A catalog with no eval is what `generate` leaves behind, so the

@@ -72,11 +72,33 @@
           "type": "string",
           "description": "Path to a local .json rubric -- a list of weighted scoring dimensions -- relative to this file. Published on deploy and fingerprinted locally so a later deploy can tell an edit here from a version published elsewhere."
         },
+        "definition": {
+          "type": "object",
+          "description": "The rubric written out here instead of named as a file. This is also what a $ref to a rubric file becomes once it is resolved. Its keys belong to the evaluator service, so they are not constrained here.",
+          "required": ["dimensions"],
+          "properties": {
+            "type": {
+              "type": "string",
+              "description": "Defaults to rubric when omitted."
+            },
+            "dimensions": {
+              "type": "array",
+              "description": "The weighted scoring dimensions the evaluator grades on."
+            }
+          }
+        },
         "version": {
           "type": "string",
           "description": "Pin to an already-registered version. Omit to publish and track the newest."
         }
-      }
+      },
+      "allOf": [
+        {
+          "$comment": "A rubric is named or written out, never both.",
+          "if": { "required": ["definition"] },
+          "then": { "properties": { "source": false } }
+        }
+      ]
     },
     "Eval": {
       "type": "object",
