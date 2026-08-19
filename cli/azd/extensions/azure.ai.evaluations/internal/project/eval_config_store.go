@@ -16,6 +16,7 @@ import (
 
 	"azureaieval/internal/messages"
 
+	"github.com/azure/azure-dev/cli/azd/pkg/foundry"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -120,7 +121,50 @@ func LoadEvalConfig(path string) (*EvalConfig, error) {
 	if err != nil {
 		return nil, messages.ReadingEvalConfig(path, err)
 	}
-	return DecodeEvalConfig(data, path)
+	resolved, err := resolveConfigRefs(data, filepath.Dir(path), path)
+	if err != nil {
+		return nil, err
+	}
+	return DecodeEvalConfig(resolved, path)
+}
+
+// resolveConfigRefs expands `$ref` includes before the strict decode.
+//
+// Core owns the resolver but does not run it for us: it hands each extension
+// the entry with `$ref` still in it. The service target has always called it,
+// and this path did not, so `azd up` accepted an include that every CLI command
+// then refused as an unknown key — the same file meaning two different things
+// depending on which command opened it.
+//
+// A configuration with no `$ref` is returned untouched rather than round-tripped
+// through a map, so the overwhelmingly common case keeps the decoder's own line
+// numbers in its diagnostics.
+func resolveConfigRefs(data []byte, baseDir, name string) ([]byte, error) {
+	if !bytes.Contains(data, []byte("$ref")) {
+		return data, nil
+	}
+
+	var raw map[string]any
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return nil, messages.ParsingEvalConfig(name, err)
+	}
+	if raw == nil {
+		return data, nil
+	}
+
+	resolved, err := foundry.ResolveFileRefs(raw, baseDir)
+	if err != nil {
+		return nil, messages.ResolvingServiceRefs(err)
+	}
+	// `$ref` is a directive rather than configuration, and the strict decoder
+	// would report the leftover as a mistyped key.
+	delete(resolved, "$ref")
+
+	out, err := yaml.Marshal(resolved)
+	if err != nil {
+		return nil, messages.ParsingEvalConfig(name, err)
+	}
+	return out, nil
 }
 
 // DecodeEvalConfig is the one strict decoder, so every route into a
