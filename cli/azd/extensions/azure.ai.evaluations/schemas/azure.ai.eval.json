@@ -8,18 +8,13 @@
   "properties": {
     "datasets": {
       "type": "array",
-      "description": "Catalog of named datasets. An entry with a source is uploaded on deploy; without one the name must already resolve to a registered dataset.",
+      "description": "Catalog of named datasets. An entry with a file is uploaded on deploy; without one the name must already resolve to a registered dataset.",
       "items": { "$ref": "#/definitions/DatasetDecl" }
     },
     "evaluators": {
       "type": "array",
-      "description": "Catalog of named custom evaluators. Each entry is either an inline definition or a $ref to a file holding one. Built-in evaluators are referenced straight from an eval and are never declared here.",
-      "items": {
-        "oneOf": [
-          { "$ref": "#/definitions/EvaluatorDecl" },
-          { "$ref": "#/definitions/FileRef" }
-        ]
-      }
+      "description": "Catalog of named custom evaluators. Built-in evaluators are referenced straight from an eval and are never declared here.",
+      "items": { "$ref": "#/definitions/EvaluatorDecl" }
     },
     "evals": {
       "type": "array",
@@ -28,18 +23,6 @@
     }
   },
   "definitions": {
-    "FileRef": {
-      "type": "object",
-      "required": ["$ref"],
-      "additionalProperties": true,
-      "description": "Replace an inline definition with a reference to an external YAML or JSON file. Sibling properties on the same object act as overlay overrides on top of the loaded file.",
-      "properties": {
-        "$ref": {
-          "type": "string",
-          "description": "Path to a YAML or JSON file containing the definition. Relative paths resolve from the file containing this $ref. Absolute paths are also accepted; remote URLs are not supported."
-        }
-      }
-    },
     "DatasetDecl": {
       "type": "object",
       "required": ["name"],
@@ -62,14 +45,15 @@
     "EvaluatorDecl": {
       "type": "object",
       "required": ["name"],
-      "additionalProperties": true,
-      "description": "An evaluator definition. The rubric's own keys -- type and dimensions, or a definition object wrapping them -- sit beside name, because the entry is the definition rather than a pointer to one. The service owns those keys, so they are not enumerated here.",
-      "$comment": "additionalProperties has to stay true to carry the service-owned rubric keys, so it cannot tell itself apart from a FileRef the way the agents schemas do. Rejecting $ref here is what keeps the oneOf unambiguous.",
-      "not": { "required": ["$ref"] },
+      "additionalProperties": false,
       "properties": {
         "name": {
           "type": "string",
           "description": "Name the evaluator is registered under. Letters, digits, dashes and underscores, up to 255 characters."
+        },
+        "source": {
+          "type": "string",
+          "description": "Path to a local .json rubric -- a list of weighted scoring dimensions -- relative to this file. Published on deploy and fingerprinted locally so a later deploy can tell an edit here from a version published elsewhere."
         },
         "version": {
           "type": "string",
@@ -107,7 +91,7 @@
         },
         "max_samples": {
           "type": "integer",
-          "minimum": 1,
+          "minimum": 0,
           "description": "Cap on rows graded per run."
         },
         "evaluators": {
@@ -140,12 +124,13 @@
         },
         "lookback_hours": {
           "type": "integer",
-          "minimum": 1,
-          "description": "How far back the trace window reaches from its end. Only for type: traces."
+          "minimum": 0,
+          "maximum": 87600,
+          "description": "How far back the trace window reaches from its end, capped at ten years (project.MaxLookbackHours). Zero means unset. Only for type: traces."
         },
         "max_traces": {
           "type": "integer",
-          "minimum": 1,
+          "minimum": 0,
           "description": "Cap on traces read. Only for type: traces. Removing it restores the service default."
         },
         "agent_name": {
@@ -163,7 +148,7 @@
         },
         "max_turns": {
           "type": "integer",
-          "minimum": 1,
+          "minimum": 0,
           "description": "Cap on turns taken from each conversation."
         },
         "start_time": {
