@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
 // Package messages holds every string this extension shows a user.
 //
 // One file, so the whole voice of the CLI can be reviewed in one sitting and a
@@ -52,7 +55,7 @@ func NoEvalToRun() error {
 // different: this one is answered by a dataset, not by a source block.
 func EvalHasNoDataset(eval string) error {
 	return fmt.Errorf(
-		"eval %q references no dataset and declares no source:. Add a dataset: to "+
+		"eval %q references no dataset and declares no source. Add a dataset: to "+
 			"score rows you supply, or a source: to score traces or stored responses",
 		eval)
 }
