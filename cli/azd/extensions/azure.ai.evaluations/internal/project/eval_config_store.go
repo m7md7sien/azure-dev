@@ -215,7 +215,28 @@ func resolveConfigRefs(data []byte, baseDir, name string) ([]byte, error) {
 		return data, nil
 	}
 
-	resolved, err := foundry.ResolveFileRefs(raw, baseDir)
+	resolved, err := resolveEvalRefs(raw, baseDir)
+	if err != nil {
+		return nil, err
+	}
+
+	out, err := yaml.Marshal(resolved)
+	if err != nil {
+		return nil, messages.ParsingEvalConfig(name, err)
+	}
+	return out, nil
+}
+
+// resolveEvalRefs is the one place `$ref` is resolved, so the CLI and `azd up`
+// cannot disagree about what an include means.
+//
+// They read the configuration by different routes -- off disk, and out of the
+// service entry -- and each used to resolve for itself. Every rule then had to
+// be added twice, and twice it was not: an include `azd up` accepted and every
+// CLI command refused, and later the reverse. Callers differ in how they obtain
+// the map and what they do with it; everything between is here.
+func resolveEvalRefs(values map[string]any, baseDir string) (map[string]any, error) {
+	resolved, err := foundry.ResolveFileRefs(values, baseDir)
 	if err != nil {
 		return nil, messages.ResolvingServiceRefs(err)
 	}
@@ -223,12 +244,7 @@ func resolveConfigRefs(data []byte, baseDir, name string) ([]byte, error) {
 	// would report the leftover as a mistyped key.
 	delete(resolved, "$ref")
 	nestSplicedRubrics(resolved)
-
-	out, err := yaml.Marshal(resolved)
-	if err != nil {
-		return nil, messages.ParsingEvalConfig(name, err)
-	}
-	return out, nil
+	return resolved, nil
 }
 
 // evaluatorDeclKeys are the keys an evaluator entry declares in its own right.

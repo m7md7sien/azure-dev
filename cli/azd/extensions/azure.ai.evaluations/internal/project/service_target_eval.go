@@ -15,7 +15,6 @@ import (
 	"azureaieval/internal/messages"
 
 	"github.com/azure/azure-dev/cli/azd/pkg/azdext"
-	"github.com/azure/azure-dev/cli/azd/pkg/foundry"
 	"go.yaml.in/yaml/v3"
 	"google.golang.org/protobuf/types/known/structpb"
 )
@@ -250,11 +249,10 @@ func EvalConfigFromService(svc *azdext.ServiceConfig, projectRoot string) (*Eval
 
 	values := props.AsMap()
 	if projectRoot != "" {
-		resolved, err := foundry.ResolveFileRefs(values, projectRoot)
+		resolved, err := resolveEvalRefs(values, projectRoot)
 		if err != nil {
-			return nil, messages.ResolvingServiceRefs(err)
+			return nil, err
 		}
-		nestSplicedRubrics(resolved)
 		values = resolved
 	}
 
