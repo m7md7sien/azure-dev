@@ -214,6 +214,8 @@ func resolveConfigRefs(data []byte, baseDir, name string) ([]byte, error) {
 	if raw == nil {
 		return data, nil
 	}
+	// Noted before resolution, which drops the directive it is read from.
+	splicedRubrics := evaluatorsWrittenAsRefs(raw)
 
 	resolved, err := foundry.ResolveFileRefs(raw, baseDir)
 	if err != nil {
@@ -222,12 +224,77 @@ func resolveConfigRefs(data []byte, baseDir, name string) ([]byte, error) {
 	// `$ref` is a directive rather than configuration, and the strict decoder
 	// would report the leftover as a mistyped key.
 	delete(resolved, "$ref")
+	nestSplicedRubrics(resolved, splicedRubrics)
 
 	out, err := yaml.Marshal(resolved)
 	if err != nil {
 		return nil, messages.ParsingEvalConfig(name, err)
 	}
 	return out, nil
+}
+
+// evaluatorDeclKeys are the keys an evaluator entry declares in its own right.
+// Anything else spliced in by a `$ref` is the rubric.
+var evaluatorDeclKeys = map[string]bool{
+	"$ref": true, "name": true, "source": true, "version": true, "definition": true,
+}
+
+// evaluatorsWrittenAsRefs reports which evaluator entries the author wrote as a
+// `$ref`, read before resolution because resolution removes the directive.
+func evaluatorsWrittenAsRefs(raw map[string]any) map[int]bool {
+	entries, _ := raw["evaluators"].([]any)
+	marked := map[int]bool{}
+	for i, entry := range entries {
+		if m, ok := entry.(map[string]any); ok {
+			if _, isRef := m["$ref"]; isRef {
+				marked[i] = true
+			}
+		}
+	}
+	return marked
+}
+
+// nestSplicedRubrics moves a rubric that a `$ref` spliced in at entry level
+// down under `definition`.
+//
+// `$ref` splices the referenced file's top-level keys into the entry, and a
+// rubric file is a bare `{type, dimensions}` -- the shape `generate` downloads
+// from the service -- so its keys land beside `name` and the strict decoder
+// rejects them. Moving them is what lets a `$ref` name a rubric.
+//
+// Only entries the author wrote as a `$ref` are treated this way. Doing it for
+// every entry would be a catch-all by another name: a misspelling in a
+// hand-written entry would be filed as rubric content and published to the
+// service instead of reported.
+func nestSplicedRubrics(resolved map[string]any, spliced map[int]bool) {
+	if len(spliced) == 0 {
+		return
+	}
+	entries, _ := resolved["evaluators"].([]any)
+	for i, entry := range entries {
+		if !spliced[i] {
+			continue
+		}
+		m, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		// A file already shaped `{name, definition}` needs no rescue, and
+		// merging into it would guess at which one the author meant.
+		if _, has := m["definition"]; has {
+			continue
+		}
+		rubric := map[string]any{}
+		for key, value := range m {
+			if !evaluatorDeclKeys[key] {
+				rubric[key] = value
+				delete(m, key)
+			}
+		}
+		if len(rubric) > 0 {
+			m["definition"] = rubric
+		}
+	}
 }
 
 // DecodeEvalConfig is the one strict decoder, so every route into a

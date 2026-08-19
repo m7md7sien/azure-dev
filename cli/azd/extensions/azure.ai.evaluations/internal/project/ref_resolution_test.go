@@ -85,11 +85,48 @@ evals:
 		"a definition in hand is not a path to resolve against anything")
 }
 
-// `definition` is one named key rather than a catch-all, so a misspelling in an
-// evaluator entry is still an error naming the key.
+// A `$ref` can name a bare rubric file, which is the shape the spec documents
+// and the shape `generate` downloads from the service.
 //
-// A catch-all would have absorbed it and published it to the service as part of
-// the rubric, which is a far worse way to find out.
+// `$ref` splices the file's top-level keys into the entry, so `dimensions` and
+// friends land beside `name` and used to be rejected outright. They are moved
+// under `definition` instead. Wrapping the file would have been the smaller
+// change and the wrong one: the tool writes that file, so the config has to
+// read what the tool writes.
+func TestRefCanNameABareRubricFile(t *testing.T) {
+	dir := t.TempDir()
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "evaluators"), 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "evaluators", "support-agent-quality.json"),
+		[]byte(`{"type":"rubric","pass_threshold":0.7,`+
+			`"dimensions":[{"id":"resolves_issue","weight":9,"description":"Resolves it."}]}`),
+		0o600))
+
+	path := filepath.Join(dir, "azure.eval.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(`
+evaluators:
+  - $ref: ./evaluators/support-agent-quality.json
+    name: support-agent-quality
+
+evals:
+  - name: nightly
+    dataset: golden
+`), 0o600))
+
+	cfg, err := LoadEvalConfig(path)
+	require.NoError(t, err, "the spec's own example has to load")
+	require.Len(t, cfg.Evaluators, 1)
+	assert.Equal(t, "support-agent-quality", cfg.Evaluators[0].Name,
+		"the sibling name stays the author's, not a key from the rubric")
+	assert.Equal(t, "rubric", cfg.Evaluators[0].Definition["type"])
+	assert.Equal(t, 0.7, cfg.Evaluators[0].Definition["pass_threshold"],
+		"every rubric key travels, not just the ones this decoder happens to know")
+	assert.Len(t, cfg.Evaluators[0].Definition["dimensions"], 1)
+}
+
+// The rescue above is scoped to entries written as a `$ref`, so a misspelling
+// in a hand-written entry is still an error rather than rubric content.
 func TestAMisspelledEvaluatorKeyIsStillRejected(t *testing.T) {
 	dir := t.TempDir()
 
