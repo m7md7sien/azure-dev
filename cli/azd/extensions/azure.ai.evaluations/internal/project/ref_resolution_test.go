@@ -85,6 +85,49 @@ evals:
 		"a definition in hand is not a path to resolve against anything")
 }
 
+// Both routes into a configuration have to agree about a `$ref`'d rubric.
+//
+// The deploy path resolves includes itself rather than going through
+// LoadEvalConfig, so a rescue added on one side only would recreate the exact
+// asymmetry that started this work -- an include `azd up` accepted and every
+// CLI command refused, in mirror image.
+func TestBothRoutesReadARefdRubricTheSameWay(t *testing.T) {
+	dir := t.TempDir()
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "evaluators"), 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "evaluators", "quality.json"),
+		[]byte(`{"type":"rubric","dimensions":[{"id":"tone","weight":3}]}`),
+		0o600))
+
+	path := filepath.Join(dir, "azure.eval.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(`
+evaluators:
+  - $ref: ./evaluators/quality.json
+    name: quality
+
+evals:
+  - name: nightly
+    dataset: golden
+`), 0o600))
+
+	fromDisk, err := LoadEvalConfig(path)
+	require.NoError(t, err)
+
+	svc := serviceWith(t, map[string]any{
+		"evaluators": []any{map[string]any{
+			"$ref": "./evaluators/quality.json",
+			"name": "quality",
+		}},
+		"evals": []any{map[string]any{"name": "nightly", "dataset": "golden"}},
+	})
+	fromService, err := EvalConfigFromService(svc, dir)
+	require.NoError(t, err, "`azd up` has to read what the CLI reads")
+
+	assert.Equal(t, fromDisk.Evaluators, fromService.Evaluators,
+		"one file, one meaning, whichever command opened it")
+}
+
 // A `$ref` can name a bare rubric file, which is the shape the spec documents
 // and the shape `generate` downloads from the service.
 //
