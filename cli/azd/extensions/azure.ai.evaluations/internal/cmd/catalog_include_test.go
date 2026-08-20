@@ -57,6 +57,33 @@ evaluators:
 		dir, mustOpenForEdit(t, dir), "evaluator", "tone"))
 }
 
+// An include carrying an overlay `name` is refused too, even though the name is
+// right there in the file.
+//
+// This is the shape the README recommends for a rubric. Updating it in place
+// writes `source:` beside the directive, and resolution then yields both a
+// spliced rubric and a source -- a catalog the next read rejects for declaring
+// the rubric twice. The name being visible is what made this the easier one to
+// miss.
+func TestGenerateRefusesAnIncludeThatCarriesItsName(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "evaluators"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "evaluators", "quality.json"),
+		[]byte(`{"type":"rubric","dimensions":[{"id":"tone","weight":3}]}`), 0o600))
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, project.EvalConfigBase), []byte(`
+evaluators:
+  - $ref: ./evaluators/quality.json
+    name: quality
+`), 0o600))
+
+	err := checkNameNotBehindAnInclude(
+		dir, mustOpenForEdit(t, dir), "evaluator", "quality")
+
+	require.Error(t, err, "the entry is an include, so it cannot be updated in place")
+	assert.Contains(t, err.Error(), "quality")
+}
+
 func mustOpenForEdit(t *testing.T, dir string) *project.EvalConfig {
 	t.Helper()
 	cfg, err := project.OpenEvalConfigForEdit(dir)

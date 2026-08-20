@@ -1057,7 +1057,10 @@ func DatasetNotGeneratedYet(dataset, path string) error {
 	return fmt.Errorf(
 		"its rows %s have not been generated yet. "+
 			"Run `azd ai eval generate --dataset --dataset-name %s` to write them, "+
-			"or point the declaration at a .jsonl you already have",
+			"or point the declaration at a .jsonl you already have. "+
+			"If this entry came from a `$ref`, note that a relative `file:` inside "+
+			"the referenced file resolves against azure.eval.yaml rather than against "+
+			"that file -- write the path relative to the configuration instead",
 		filepath.ToSlash(path), shellArg(dataset))
 }
 
