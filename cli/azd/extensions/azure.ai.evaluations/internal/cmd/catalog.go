@@ -66,6 +66,44 @@ func addEvaluatorToCatalog(cmd *cobra.Command, evalDir string, ref *project.Arti
 	})
 }
 
+// checkNameNotBehindAnInclude refuses a name the configuration already declares
+// through a `$ref`.
+//
+// The editing read sees the directive, not the entry behind it, so an entry
+// pulled in from its own file has no name here to match. Appending then writes a
+// second entry with the same name, and the collision surfaces only on the next
+// resolving read -- as a duplicate the author never wrote and cannot see in the
+// file they are looking at.
+//
+// A configuration that will not resolve is left to the commands that resolve it:
+// failing a generate over an unrelated broken include would be its own surprise.
+func checkNameNotBehindAnInclude(evalDir string, asWritten *project.EvalConfig, kind, name string) error {
+	if catalogDeclares(asWritten, kind, name) {
+		return nil
+	}
+	resolved, err := project.OpenEvalConfig(evalDir)
+	if err != nil || resolved == nil {
+		return nil
+	}
+	if catalogDeclares(resolved, kind, name) {
+		return messages.CatalogNameBehindAnInclude(kind, name)
+	}
+	return nil
+}
+
+// catalogDeclares reports whether the configuration names this artifact.
+func catalogDeclares(cfg *project.EvalConfig, kind, name string) bool {
+	if cfg == nil {
+		return false
+	}
+	if kind == "dataset" {
+		_, ok := cfg.DatasetDeclaration(name)
+		return ok
+	}
+	_, ok := cfg.EvaluatorDeclaration(name)
+	return ok
+}
+
 // updateCatalog applies a change to the configuration and writes it back.
 //
 // A missing configuration is created holding only the catalog. `generate` runs
@@ -95,6 +133,9 @@ func updateCatalog(
 	created := cfg == nil
 	if created {
 		cfg = &project.EvalConfig{}
+	}
+	if err := checkNameNotBehindAnInclude(evalDir, cfg, kind, ref.Name); err != nil {
+		return err
 	}
 	if !apply(cfg) {
 		return nil

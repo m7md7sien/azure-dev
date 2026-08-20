@@ -1427,6 +1427,17 @@ func RefNeedsAProjectRoot(service string) error {
 		service)
 }
 
+// CatalogNameBehindAnInclude reports a name declared through a `$ref`, which
+// this command cannot edit in place.
+func CatalogNameBehindAnInclude(kind, name string) error {
+	return fmt.Errorf(
+		"%s %q is already declared through a `$ref`, so this command cannot update "+
+			"it here: adding a second entry would collide with the first only after "+
+			"the include is resolved. Edit the referenced file, or generate under a "+
+			"different name",
+		kind, name)
+}
+
 // ReadingServiceConfig reports the service entry failing to serialize.
 func ReadingServiceConfig(err error) error {
 	return fmt.Errorf("reading the eval service configuration: %w", err)
