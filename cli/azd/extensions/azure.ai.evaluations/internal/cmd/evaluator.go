@@ -74,9 +74,7 @@ func newEvaluatorWriteCommand(verb, short string) *cobra.Command {
 		Use:   verb + " <name>",
 		Short: short,
 		Long: short + "\n\n" +
-			"An evaluator is a rubric: a JSON file of weighted scoring dimensions.\n" +
-			"Updating retains existing display name, description, categories, and supported evaluation levels\n" +
-			"unless the input document explicitly supplies those fields.",
+			"An evaluator is a rubric: a JSON file of weighted scoring dimensions.",
 		Args: requiredArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return (&evaluatorWriteAction{
@@ -115,16 +113,12 @@ func (a *evaluatorWriteAction) Run() error {
 	}
 	defer ec.Close()
 
-	return a.write(ctx, ec, body)
-}
-
-func (a *evaluatorWriteAction) write(ctx context.Context, ec *evalContext, body json.RawMessage) error {
 	// This is not a point read, whatever the route looks like: with no version
 	// the client resolves the latest through the version listing, and that
 	// listing lags a publish. A 404 moments after a create therefore means "not
 	// caught up", not "no such evaluator".
 	existing, readErr := ec.evalClient.GetEvaluatorRaw(ctx, a.name, "", ProjectEndpointAPIVersion)
-	if readErr != nil && !eval_api.IsEvaluatorAbsent(readErr) {
+	if readErr != nil && !eval_api.IsNotFound(readErr) {
 		return messages.CheckingEvaluatorExists(a.name, readErr)
 	}
 	// Only update acts on absence, so only update pays to establish it. Making
@@ -132,12 +126,12 @@ func (a *evaluatorWriteAction) write(ctx context.Context, ec *evalContext, body 
 	// absent evaluator is the expected answer and not a suspicious one.
 	if readErr != nil && a.verb == "update" {
 		existing, readErr = settledEvaluatorRead(ctx, ec, a.name)
-		if readErr != nil && !eval_api.IsEvaluatorAbsent(readErr) {
+		if readErr != nil && !eval_api.IsNotFound(readErr) {
 			return messages.CheckingEvaluatorExists(a.name, readErr)
 		}
 	}
-	// Other read failures returned above; only a 404 or a valid empty listing
-	// counts as absence here.
+	// A non-404 already returned above, so reaching here means the read either
+	// found the evaluator or the service said it is unknown.
 	if err := checkAssetExistence(a.verb, "evaluator", a.name, readErr == nil, true); err != nil {
 		return err
 	}
@@ -146,14 +140,6 @@ func (a *evaluatorWriteAction) write(ctx context.Context, ec *evalContext, body 
 	// same version and replacing it.
 	if readErr != nil {
 		existing = nil
-	}
-
-	if a.verb == "update" {
-		var err error
-		body, err = withRemoteCatalogMetadata(body, existing)
-		if err != nil {
-			return messages.EvaluatorProblem(a.name, err)
-		}
 	}
 
 	created, err := ec.evalClient.CreateEvaluatorVersion(
@@ -207,7 +193,7 @@ func settledEvaluatorRead(
 			}
 		}
 		raw, err = ec.evalClient.GetEvaluatorRaw(ctx, name, "", ProjectEndpointAPIVersion)
-		if err == nil || !eval_api.IsEvaluatorAbsent(err) {
+		if err == nil || !eval_api.IsNotFound(err) {
 			return raw, err
 		}
 	}
@@ -277,39 +263,6 @@ func ensureDefinitionType(definition json.RawMessage) (json.RawMessage, error) {
 // the declaration actually has. A document that states its own catalog fields
 // keeps them, and a declaration that records none blanks nothing.
 func withCatalogMetadata(body json.RawMessage, decl project.EvaluatorDecl) (json.RawMessage, error) {
-	metadata := map[string]any{}
-	if decl.DisplayName != "" {
-		metadata["display_name"] = decl.DisplayName
-	}
-	if len(decl.Categories) > 0 {
-		metadata["categories"] = decl.Categories
-	}
-	if len(decl.SupportedEvaluationLevels) > 0 {
-		metadata["supported_evaluation_levels"] = decl.SupportedEvaluationLevels
-	}
-	return withEvaluatorMetadata(body, metadata)
-}
-
-// withRemoteCatalogMetadata keeps catalog fields out of the editable rubric
-// without losing them when that rubric is published through standalone update.
-func withRemoteCatalogMetadata(body, existing json.RawMessage) (json.RawMessage, error) {
-	var remote map[string]json.RawMessage
-	if err := json.Unmarshal(existing, &remote); err != nil {
-		return nil, notAnObject(existing, err)
-	}
-	if remote == nil {
-		return nil, messages.DefinitionIsNull()
-	}
-	metadata := map[string]any{}
-	for _, key := range []string{"display_name", "description", "categories", "supported_evaluation_levels"} {
-		if value, present := remote[key]; present {
-			metadata[key] = value
-		}
-	}
-	return withEvaluatorMetadata(body, metadata)
-}
-
-func withEvaluatorMetadata(body json.RawMessage, metadata map[string]any) (json.RawMessage, error) {
 	var doc map[string]json.RawMessage
 	if err := json.Unmarshal(body, &doc); err != nil {
 		return nil, notAnObject(body, err)
@@ -319,16 +272,33 @@ func withEvaluatorMetadata(body json.RawMessage, metadata map[string]any) (json.
 	}
 
 	added := false
-	for key, value := range metadata {
+	set := func(key string, value any) error {
 		if _, present := doc[key]; present {
-			continue
+			return nil
 		}
 		encoded, err := json.Marshal(value)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		doc[key] = encoded
 		added = true
+		return nil
+	}
+
+	if decl.DisplayName != "" {
+		if err := set("display_name", decl.DisplayName); err != nil {
+			return nil, err
+		}
+	}
+	if len(decl.Categories) > 0 {
+		if err := set("categories", decl.Categories); err != nil {
+			return nil, err
+		}
+	}
+	if len(decl.SupportedEvaluationLevels) > 0 {
+		if err := set("supported_evaluation_levels", decl.SupportedEvaluationLevels); err != nil {
+			return nil, err
+		}
 	}
 
 	// Re-marshalling reorders keys, so a body that gained nothing is returned

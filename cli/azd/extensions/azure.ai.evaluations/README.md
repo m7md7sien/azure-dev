@@ -265,10 +265,7 @@ simulation runs record configuration under `metadata.azd_simulation_*`, with
 Before publishing dependencies, `azd ai eval create <name>` validates the selected
 eval, its local JSONL/rubric files, and its registered dataset/evaluator references,
 including version pins. An unavailable reference lookup is an error, not a reason
-to publish optimistically. A valid, complete empty evaluator-version listing
-allows the first publication of a local rubric; it does not create an evaluator
-for an existing-only reference. Missing or malformed list data and failed
-continuation pages remain errors. Unrelated invalid evals do not block this targeted
+to publish optimistically. Unrelated invalid evals do not block this targeted
 command; `azd up` validates the entire evaluation service before publishing any
 of its dependencies. Validation does not write private reconciliation state.
 Local rows used to invoke an agent or model must carry the `query` field the
@@ -397,12 +394,6 @@ auto-increments and nothing mutates in place.
 question, which is what a pipeline passes. `job delete` is the exception: it
 discards a record of finished work, not the artifact the job produced.
 
-After a successful eval deletion, the command removes its local named aliases,
-fingerprints, and scoped identity references, including when given a service ID.
-Unrelated eval scopes and shared dataset/evaluator versions are preserved.
-Failed or ambiguous deletes do not clear state. If local cleanup fails after
-the service has deleted the eval, a warning reports that failure separately.
-
 Every command supports `-o json` and `--no-prompt`, so the whole surface is
 usable from CI.
 
@@ -512,33 +503,6 @@ A custom rubric is a JSON list of weighted dimensions:
 
 `weight` is an **integer from 1 to 10**. Weights do not need to sum to
 anything.
-
-### Editing a registered rubric
-
-Download a version, edit its dimensions or pass threshold, then publish the edit:
-
-```bash
-azd ai eval evaluator download support-quality --version 3 --output-file ./support-quality.json
-azd ai eval evaluator update support-quality --from-file ./support-quality.json
-```
-
-A rubric download uses the same editable JSON shape as generation: `type`,
-`dimensions`, and `pass_threshold`, plus any additional editable definition
-fields. It omits the service envelope and generated wiring such as
-`data_schema`, `init_parameters`, `metrics`, and `prompt_text`. Other evaluator
-kinds retain their full document. To inspect or export the full service response,
-use `azd ai eval evaluator show support-quality --version 3 -o json`.
-
-Standalone `evaluator update` preserves the existing display name, description,
-categories, and supported evaluation levels. A full input document can explicitly
-replace those fields. The download does not modify configuration or attach the
-evaluator to an eval. When using the downloaded rubric as a declaration's
-`source`, keep `display_name`, `categories`, and `supported_evaluation_levels`
-on that declaration: `azd up` carries them into later versions and leaves an
-unchanged rubric unpublished.
-
-Omitting `--version` downloads the latest version and reports which one was used.
-Existing files are not replaced unless `--force` is supplied.
 
 ## Choosing a project
 

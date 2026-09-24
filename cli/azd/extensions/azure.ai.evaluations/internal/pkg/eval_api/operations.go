@@ -439,11 +439,8 @@ func (c *EvalClient) LatestEvaluatorVersion(
 	if err != nil {
 		return "", err
 	}
-	if list == nil {
-		return "", messages.EvaluatorHasNoUsableVersion(name)
-	}
-	if len(list.Value) == 0 {
-		return "", &noEvaluatorVersionsError{name: name}
+	if list == nil || len(list.Value) == 0 {
+		return "", messages.EvaluatorHasNoVersions(name)
 	}
 	latest := pickLatestVersion(list.Value)
 	if latest == "" {
