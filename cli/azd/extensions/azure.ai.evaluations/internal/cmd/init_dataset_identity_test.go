@@ -17,6 +17,8 @@ import (
 	"github.com/braydonk/yaml"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 var initIdentityDeclarations = map[string]string{
@@ -111,7 +113,7 @@ func TestInitDatasetCollisionCorrection(t *testing.T) {
 				assert.Contains(t, text, "different filename stem")
 				if cancel {
 					require.Error(t, err)
-					assert.True(t, cancelled(err))
+					assert.Equal(t, codes.Canceled, status.Code(err))
 					prompts.mu.Lock()
 					assert.Empty(t, prompts.messages)
 					prompts.mu.Unlock()

@@ -188,7 +188,7 @@ func TestInitSimulationValidatesAfterInteractiveModeAndModel(t *testing.T) {
 	text, err := executeConversationInit(t, "--name", "simulation", "--source", "dataset",
 		"--evaluation-level", "conversation", "--target", "agent", "--dataset", h.seedRows, "--judge-model", "judge")
 	require.Error(t, err)
-	assert.True(t, cancelled(err))
+	assert.Equal(t, codes.Canceled, status.Code(err))
 	assert.Contains(t, text, "empty or non-text")
 	prompts.mu.Lock()
 	defer prompts.mu.Unlock()
@@ -312,7 +312,7 @@ func TestInitSimulationCorrectionCancellationPreservesFiles(t *testing.T) {
 			defer prompts.mu.Unlock()
 			if cancelAt == "correction" {
 				require.Error(t, err)
-				assert.True(t, cancelled(err))
+				assert.Equal(t, codes.Canceled, status.Code(err))
 				assert.Empty(t, prompts.messages)
 			} else {
 				require.NoError(t, err)
