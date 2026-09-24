@@ -143,11 +143,19 @@ reuse it. Equivalent paths to the same file are accepted, preserving references,
 version pins, and other authored metadata.
 When `--path` names a configuration file, dataset lookup uses that exact file,
 while artifact paths remain relative to its directory.
+New paths ending in `.yaml` or `.yml` are treated as configuration files,
+including absolute paths and paths containing spaces. Existing directories
+remain directories, even if their names end in `.yaml`.
+Init supports `--output default` for human-readable output and `--output json`
+for structured output. Unsupported formats are rejected before any authored writes.
 Registered datasets with no local file are not fetched or checked by init.
 The evaluator picker excludes custom evaluators whose local
 `supported_evaluation_levels` explicitly excludes the selected level; an explicit
 incompatible `--evaluator` is rejected. Missing or unfamiliar metadata remains
 unknown, with authoritative compatibility checked when the eval is created.
+Omitting `--evaluator` keeps the default selection or opens the interactive
+picker. An explicitly empty `--evaluator` is rejected rather than silently
+restoring the default.
 
 The example above grades rows that already hold an exchange. A `simulation:`
 block instead has the service hold the conversation first — a simulator model
@@ -386,6 +394,12 @@ auto-increments and nothing mutates in place.
 question, which is what a pipeline passes. `job delete` is the exception: it
 discards a record of finished work, not the artifact the job produced.
 
+After a successful eval deletion, the command removes its local named aliases,
+fingerprints, and scoped identity references, including when given a service ID.
+Unrelated eval scopes and shared dataset/evaluator versions are preserved.
+Failed or ambiguous deletes do not clear state. If local cleanup fails after
+the service has deleted the eval, a warning reports that failure separately.
+
 Every command supports `-o json` and `--no-prompt`, so the whole surface is
 usable from CI.
 
@@ -430,8 +444,9 @@ they are absent from the response.
 
 Output-item JSON preserves unrecognized nested service fields, including
 evaluator `properties` and `sample` details; modeled scores keep their existing
-numeric normalization. These fields can contain prompts, answers, and other
-sensitive evaluation content. Prefer a private destination with
+numeric normalization. Numeric dataset values retain their precision rather
+than being rounded through floating-point decoding. These fields can contain
+prompts, answers, and other sensitive evaluation content. Prefer a private destination with
 `run output list --output-file` or `run output export --output-file` over
 writing JSON into shared terminal or CI logs.
 
@@ -494,6 +509,33 @@ A custom rubric is a JSON list of weighted dimensions:
 
 `weight` is an **integer from 1 to 10**. Weights do not need to sum to
 anything.
+
+### Editing a registered rubric
+
+Download a version, edit its dimensions or pass threshold, then publish the edit:
+
+```bash
+azd ai eval evaluator download support-quality --version 3 --output-file ./support-quality.json
+azd ai eval evaluator update support-quality --from-file ./support-quality.json
+```
+
+A rubric download uses the same editable JSON shape as generation: `type`,
+`dimensions`, and `pass_threshold`, plus any additional editable definition
+fields. It omits the service envelope and generated wiring such as
+`data_schema`, `init_parameters`, `metrics`, and `prompt_text`. Other evaluator
+kinds retain their full document. To inspect or export the full service response,
+use `azd ai eval evaluator show support-quality --version 3 -o json`.
+
+Standalone `evaluator update` preserves the existing display name, description,
+categories, and supported evaluation levels. A full input document can explicitly
+replace those fields. The download does not modify configuration or attach the
+evaluator to an eval. When using the downloaded rubric as a declaration's
+`source`, keep `display_name`, `categories`, and `supported_evaluation_levels`
+on that declaration: `azd up` carries them into later versions and leaves an
+unchanged rubric unpublished.
+
+Omitting `--version` downloads the latest version and reports which one was used.
+Existing files are not replaced unless `--force` is supplied.
 
 ## Choosing a project
 
