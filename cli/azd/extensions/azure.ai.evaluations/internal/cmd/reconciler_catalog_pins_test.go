@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -27,10 +28,15 @@ import (
 )
 
 type catalogPinService struct {
-	mu      sync.Mutex
-	latest  string
-	created []eval_api.CreateOpenAIEvalRequest
-	evals   map[string]*eval_api.OpenAIEval
+	mu         sync.Mutex
+	latest     string
+	listStatus int
+	listBody   string
+	publishes  int
+	versions   map[string]json.RawMessage
+	reads      []string
+	created    []eval_api.CreateOpenAIEvalRequest
+	evals      map[string]*eval_api.OpenAIEval
 }
 
 func (s *catalogPinService) serve(t *testing.T) http.HandlerFunc {
@@ -40,18 +46,66 @@ func (s *catalogPinService) serve(t *testing.T) http.HandlerFunc {
 		defer s.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/evaluators":
+			rows := []json.RawMessage{}
+			if r.URL.Query().Get("type") != eval_api.EvaluatorTypeBuiltin && s.versions[s.latest] != nil {
+				rows = append(rows, s.versions[s.latest])
+			}
+			assert.NoError(t, json.NewEncoder(w).Encode(map[string]any{"value": rows}))
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/evaluators/"):
+			s.reads = append(s.reads, r.URL.Path)
 			if strings.HasSuffix(r.URL.Path, "/versions") {
+				if s.listStatus != 0 {
+					w.WriteHeader(s.listStatus)
+					return
+				}
+				if s.listBody != "" {
+					_, err := w.Write([]byte(s.listBody))
+					assert.NoError(t, err)
+					return
+				}
+				rows := []map[string]string{}
+				if s.latest != "" {
+					rows = append(rows, map[string]string{"name": "custom", "version": s.latest})
+				}
 				assert.NoError(t, json.NewEncoder(w).Encode(map[string]any{
-					"value": []map[string]string{{"name": "custom", "version": s.latest}},
+					"value": rows,
 				}))
 			} else {
 				version := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+				if body := s.versions[version]; body != nil {
+					_, err := w.Write(body)
+					assert.NoError(t, err)
+					return
+				}
 				assert.NoError(t, json.NewEncoder(w).Encode(map[string]any{
 					"name": "custom", "version": version,
 					"definition": map[string]any{"data_schema": map[string]any{"properties": map[string]any{}}},
 				}))
 			}
+		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/evaluators/"):
+			var body map[string]json.RawMessage
+			if !assert.NoError(t, json.NewDecoder(r.Body).Decode(&body)) {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			latest := 0
+			if s.latest != "" {
+				var err error
+				latest, err = strconv.Atoi(s.latest)
+				assert.NoError(t, err)
+			}
+			s.latest = strconv.Itoa(latest + 1)
+			body["version"] = json.RawMessage(strconv.Quote(s.latest))
+			raw, err := json.Marshal(body)
+			assert.NoError(t, err)
+			if s.versions == nil {
+				s.versions = map[string]json.RawMessage{}
+			}
+			s.versions[s.latest] = raw
+			s.publishes++
+			_, err = w.Write(raw)
+			assert.NoError(t, err)
 		case r.Method == http.MethodPost && r.URL.Path == "/openai/v1/evals":
 			var request eval_api.CreateOpenAIEvalRequest
 			if !assert.NoError(t, json.NewDecoder(r.Body).Decode(&request)) {
