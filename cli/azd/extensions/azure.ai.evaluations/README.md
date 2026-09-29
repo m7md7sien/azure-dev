@@ -153,6 +153,28 @@ See the Foundry documentation for
 [target response bindings](https://learn.microsoft.com/azure/foundry/observability/how-to/cloud-evaluation-targets#set-up-evaluators-and-data-mappings),
 and [conversation mappings](https://learn.microsoft.com/azure/foundry/observability/how-to/cloud-evaluation-conversations#define-the-data-schema-and-evaluators).
 
+#### Updating an existing evaluation
+
+Stored evaluation mappings are immutable. Installing a newer extension or
+running `azd ai eval create` on an unchanged declaration does not replace old
+defaults. Switching between trace and stored-response source modes creates a
+new definition when their stored input contracts differ; changing only filters,
+time windows, response IDs, or row caps keeps the existing history.
+
+To deliberately apply the current mappings to an existing evaluation:
+
+1. Record its current ID and inspect its mappings with `azd ai eval show <eval-id> -o json`.
+2. Set the intended explicit `data_mapping` entries and change one evaluator
+   reference's criterion `name`, for example `name: groundedness_mapped`. This
+   changes the immutable definition. Changing only the eval group's name can
+   rename or reuse it instead.
+3. Run `azd ai eval create <eval-name>` for that declaration, or `azd up`.
+   Confirm the new ID and mappings with `show` before starting another run.
+
+The previous evaluation and its runs are not deleted. Keep the recorded old ID
+to inspect that history. This migration updates the client request definition;
+it does not establish a successful hosted groundedness result.
+
 ### Registered dataset identity
 
 Runs bind registered datasets using the service-issued version ID, including
