@@ -202,16 +202,6 @@ func planCriterion(
 			continue
 		}
 		if binding, ok := targetBindings[field]; ok {
-			// Preserve tool results for structured evaluators, but do not send
-			// an array to a published string-only response contract.
-			if field == "response" && binding == "{{sample.output_items}}" {
-				if dataSchema := schema.DataSchema(); dataSchema != nil {
-					if property, ok := dataSchema.Properties[field].(map[string]any); ok &&
-						property["type"] == "string" {
-						binding = "{{sample.output_text}}"
-					}
-				}
-			}
 			plan.dataMapping[field] = binding
 			continue
 		}
@@ -463,7 +453,20 @@ func buildEvalRequest(
 			schema = &eval_api.EvaluatorSummary{Name: ref.Evaluator}
 		}
 
-		plan, err := planCriterion(ref, schema, targetBindings, datasetColumns, level)
+		bindings := targetBindings
+		// The preview trace source has a separate, unverified turn contract.
+		// Do not infer its output namespace from target/response examples.
+		if group.Source == nil || group.Source.Type != project.SourceTypeTraces {
+			if dataSchema := schema.DataSchema(); dataSchema != nil &&
+				bindings["response"] == "{{sample.output_items}}" {
+				if property, ok := dataSchema.Properties["response"].(map[string]any); ok &&
+					property["type"] == "string" {
+					bindings = maps.Clone(bindings)
+					bindings["response"] = "{{sample.output_text}}"
+				}
+			}
+		}
+		plan, err := planCriterion(ref, schema, bindings, datasetColumns, level)
 		if err != nil {
 			return nil, err
 		}

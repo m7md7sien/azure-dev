@@ -220,6 +220,24 @@ func TestMappingStaticMessagesAtTurnLevel(t *testing.T) {
 	require.Equal(t, map[string]string{"messages": "{{item.messages}}"}, request.TestingCriteria[0].DataMapping)
 }
 
+func TestMappingPreviewTurnTraceKeepsExistingBindings(t *testing.T) {
+	for _, withTarget := range []bool{false, true} {
+		contract := schema("judge", []string{"response"}, []string{"query", "response"}, nil, nil, "turn")
+		contract.Definition.DataSchema.Properties["response"] = map[string]any{"type": "string"}
+		group := groupWith([]evalcore.EvaluatorRef{{Evaluator: "judge"}}, "turn")
+		group.Source = &project.SourceDecl{Type: project.SourceTypeTraces, AgentName: "recorded"}
+		want := "{{sample.output_items}}"
+		if !withTarget {
+			group.Target = nil
+			want = "{{item.response}}"
+		}
+		request, err := buildEvalRequest(group, map[string]*eval_api.EvaluatorSummary{"judge": contract}, nil)
+		require.NoError(t, err)
+		require.Equal(t, want, request.TestingCriteria[0].DataMapping["response"],
+			"legacy trace samples do not establish the preview turn-trace mapping")
+	}
+}
+
 func TestMappingGroundednessAcceptsActualStructuredRows(t *testing.T) {
 	contract := schema("builtin.groundedness", []string{"response"}, []string{
 		"query", "response", "context", "tool_definitions",
