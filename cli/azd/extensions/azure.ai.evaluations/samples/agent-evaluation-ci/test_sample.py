@@ -151,6 +151,27 @@ class SampleTests(unittest.TestCase):
             self.assertNotIn("continue-on-error", text)
             self.assertNotIn("continueOnError", text)
             self.assertNotIn("auth login", text)
+        github = (sample.HERE / "github" / "action.yml").read_text()
+        ado = (sample.HERE / "azure-pipelines.steps.yml").read_text()
+        self.assertIn("if [ -e \"$SAMPLE_OUTPUT\" ]", github)
+        self.assertIn("steps.lifecycle.outputs.fresh_output == 'true'", github)
+        self.assertIn("Test-Path -LiteralPath $env:SAMPLE_OUTPUT", ado)
+        self.assertIn("and(always(), eq(variables['SampleFreshOutput'], 'true'))", ado)
+
+    def test_process_start_failure_records_blocked_not_success(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "plan.json"
+            path.write_text(json.dumps({"mode": sample.MODE}))
+            env = {"AZD_SCENARIO_LIVE_APPROVAL_SHA256": "c" * 64,
+                   "AZD_SCENARIO_LIVE_AUTH_CONFIG": "caller-owned"}
+            with mock.patch.dict(os.environ, env, clear=True), \
+                 mock.patch.object(sample.subprocess, "run", side_effect=OSError("private path")), \
+                 redirect_stderr(io.StringIO()) as stderr:
+                self.assertEqual(sample.execute(self.root, path, root / "evidence"), 3)
+            receipt = sample.read_json(root / "evidence" / "service-status.json")
+            self.assertEqual((receipt["status"], receipt["execution"]), ("BLOCKED", "NOT RUN"))
+            self.assertNotIn("private path", stderr.getvalue() + json.dumps(receipt))
 
     def test_executor_exit_codes_and_arguments_are_preserved_without_a_shell(self):
         with tempfile.TemporaryDirectory() as directory:

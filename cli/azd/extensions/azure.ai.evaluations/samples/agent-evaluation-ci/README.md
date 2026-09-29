@@ -213,7 +213,9 @@ variables. No organization, pipeline ID, connection or pool is supplied here.
 ```
 
 Both forms preserve nonzero exit status and publish **only**
-`service-status.json`, including failures. The parent must never use
+`service-status.json`, including failures. They reject an existing output
+directory before launch and suppress its upload, so an old PASS receipt cannot
+be published as this attempt's evidence. The parent must never use
 `continue-on-error` or `continueOnError` on this gate. Restrict artifact access:
 receipts contain owned resource IDs, although not credential caches, prompts,
 raw responses or the approved plan. GitHub retention is seven days; configure

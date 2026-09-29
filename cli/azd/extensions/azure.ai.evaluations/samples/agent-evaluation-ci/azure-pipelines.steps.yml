@@ -1,4 +1,5 @@
 # Include only in an already approved job, after package/auth/plan staging.
+# cspell:ignore setvariable
 parameters:
   - name: executorRoot
     type: string
@@ -12,6 +13,11 @@ parameters:
 
 steps:
   - pwsh: |
+      Write-Host "##vso[task.setvariable variable=SampleFreshOutput]false"
+      if (Test-Path -LiteralPath $env:SAMPLE_OUTPUT) {
+        throw "Output directory must be new; existing evidence will not be uploaded"
+      }
+      Write-Host "##vso[task.setvariable variable=SampleFreshOutput]true"
       python "$env:SAMPLE_DIRECTORY/run.py" `
         --executor-root "$env:SAMPLE_EXECUTOR_ROOT" `
         --plan "$env:SAMPLE_PLAN" --output "$env:SAMPLE_OUTPUT"
@@ -25,7 +31,7 @@ steps:
       AZD_SCENARIO_LIVE_APPROVAL_SHA256: $(ScenarioLiveApprovalSha256)
       AZD_SCENARIO_LIVE_AUTH_CONFIG: $(ScenarioLiveAuthConfig)
   - task: PublishPipelineArtifact@1
-    condition: always()
+    condition: and(always(), eq(variables['SampleFreshOutput'], 'true'))
     displayName: Preserve sanitized outcome, including failed or blocked runs
     inputs:
       targetPath: ${{ parameters.outputDirectory }}/service-status.json
