@@ -99,6 +99,68 @@ func TestMappingRequiredAdditionalInputIsNeverInferred(t *testing.T) {
 	}
 }
 
+func TestMappingExplicitCustomColumnsOnProductionWire(t *testing.T) {
+	for _, level := range []string{"turn", "conversation"} {
+		t.Run(level, func(t *testing.T) {
+			overrides := map[string]string{
+				"query": "{{item.question}}", "response": "{{item.answer}}",
+				"context": "{{item.facts}}", "ground_truth": "{{item.expected}}",
+			}
+			want := map[string]string{
+				"query": "{{item.question}}", "response": "{{item.answer}}",
+				"context": "{{item.facts}}", "ground_truth": "{{item.expected}}",
+				"tool_calls": "{{item.tool_calls}}", "tool_definitions": "{{item.tool_definitions}}",
+			}
+			if level == "conversation" {
+				overrides = map[string]string{
+					"messages": "{{item.transcript}}", "context": "{{item.facts}}",
+				}
+				want = map[string]string{
+					"messages": "{{item.transcript}}", "context": "{{item.facts}}",
+					"tool_definitions": "{{item.tool_definitions}}",
+				}
+			}
+			var row map[string]any
+			require.NoError(t, json.Unmarshal([]byte(`{
+				"question":"Weather?","answer":"Rain.","facts":"It is raining.","expected":"Rain.",
+				"transcript":[{"role":"tool","content":"Rain."},{"role":"assistant","content":"Rain."}],
+				"tool_calls":[{"name":"weather"}],"tool_definitions":[{"name":"weather"}]
+			}`), &row))
+			columns := map[string]bool{}
+			for field := range row {
+				columns[field] = true
+			}
+			var posted eval_api.CreateOpenAIEvalRequest
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, http.MethodPost, r.Method)
+				assert.Equal(t, "/openai/v1/evals", r.URL.Path)
+				assert.NoError(t, json.NewDecoder(r.Body).Decode(&posted))
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"id":"eval_custom"}`))
+			}))
+			defer srv.Close()
+			group := &project.Eval{
+				Name: "custom", Dataset: "d", EvaluationLevel: level,
+				Evaluators: []evalcore.EvaluatorRef{{Evaluator: "builtin.groundedness", DataMapping: overrides}},
+			}
+			request, err := buildEvalRequest(group, nil, columns)
+			require.NoError(t, err)
+			_, err = evalContextFor(srv).evalClient.CreateOpenAIEval(t.Context(), request)
+			require.NoError(t, err)
+			require.Len(t, posted.TestingCriteria, 1)
+			require.Equal(t, want, posted.TestingCriteria[0].DataMapping)
+			for field, binding := range posted.TestingCriteria[0].DataMapping {
+				column, ok := itemColumn(binding)
+				require.True(t, ok)
+				value, present := row[column]
+				require.True(t, present, "mapped %s needs actual source %s", field, column)
+				require.NotNil(t, value)
+			}
+			require.Equal(t, "It is raining.", row["facts"], "explicit grounding data is not synthesized")
+		})
+	}
+}
+
 func TestMappingRequiredAdditionalInputUsesExplicitSource(t *testing.T) {
 	group := &project.Eval{
 		Name: "grounding", Dataset: "d",
