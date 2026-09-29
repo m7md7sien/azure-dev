@@ -133,7 +133,8 @@ func (s *validationService) serve(t *testing.T, base func() string) http.Handler
 func validationFixture(t *testing.T) (*evalContext, *testEnvServer, *validationService, *project.EvalConfig, string) {
 	t.Helper()
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "rows.jsonl"), []byte("{\"query\":\"hi\"}\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "rows.jsonl"),
+		[]byte("{\"query\":\"hi\",\"response\":\"hello\"}\n"), 0o600))
 	service := &validationService{
 		status: http.StatusOK,
 		definition: `{"name":"builtin.valid","version":"1","definition":{"data_schema":` +
@@ -411,6 +412,7 @@ func TestLocalRubricOverrideCannotHideReusedContract(t *testing.T) {
 
 func TestLocalRubricPreflightAllowsDigestDetectedEdit(t *testing.T) {
 	ec, env, service, cfg, dir := validationFixture(t)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "rows.jsonl"), []byte(`{"messages":[]}`), 0o600))
 	before := `{"type":"rubric","dimensions":[{"id":"clarity","weight":5}],"pass_threshold":0.6}`
 	after := `{"type":"rubric","dimensions":[{"id":"clarity","weight":5}]}`
 	decl := project.EvaluatorDecl{

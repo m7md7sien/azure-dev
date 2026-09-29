@@ -146,7 +146,10 @@ func TestReconciliationAcceptsUsableLocalDatasetModes(t *testing.T) {
 	}{
 		{"agent query", `{"query":"hello"}`, project.TargetTypeAgent, false},
 		{"model query", `{"query":"hello"}`, project.TargetTypeModel, false},
-		{"sparse target inputs", "{\"query\":\"hi\"}\n{\"response\":\"answer\"}", project.TargetTypeAgent, false},
+		{
+			"sparse optional target outputs", "{\"query\":\"hi\"}\n{\"query\":\"hello\",\"response\":\"answer\"}",
+			project.TargetTypeAgent, false,
+		},
 		{"static completed conversation", `{"messages":[{"role":"user","content":"hello"}]}`, "", false},
 		{"seed without optional turns", `{"test_case_description":"A delayed order."}`, project.TargetTypeAgent, true},
 		{
@@ -164,6 +167,8 @@ func TestReconciliationAcceptsUsableLocalDatasetModes(t *testing.T) {
 				group := &cfg.Evals[0]
 				if tt.target != "" {
 					group.Target = &project.Target{Name: "target", Type: tt.target}
+				} else {
+					group.EvaluationLevel = project.EvaluationLevelConversation
 				}
 				if tt.simulated {
 					group.EvaluationLevel = project.EvaluationLevelConversation
