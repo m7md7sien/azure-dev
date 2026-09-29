@@ -6,6 +6,7 @@ package cmd
 import (
 	"encoding/json"
 	"errors"
+	"maps"
 	"testing"
 
 	"azureaieval/internal/exterrors"
@@ -90,7 +91,9 @@ func TestMappingRequiredInteractionAlternative(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
-			require.Equal(t, map[string]string{"messages": "{{item.messages}}"}, request.TestingCriteria[0].DataMapping)
+			require.Equal(t, map[string]string{
+				"messages": "{{item.messages}}", "tool_definitions": "{{item.tool_definitions}}",
+			}, request.TestingCriteria[0].DataMapping)
 		})
 	}
 }
@@ -113,7 +116,9 @@ func TestMappingExplicitMessagesSuppressLegacyTurnDefaults(t *testing.T) {
 	request, err := buildEvalRequest(group, map[string]*eval_api.EvaluatorSummary{"judge": contract},
 		map[string]bool{"query": true, "response": true, "transcript": true})
 	require.NoError(t, err)
-	require.Equal(t, map[string]string{"messages": "{{item.transcript}}"}, request.TestingCriteria[0].DataMapping)
+	require.Equal(t, map[string]string{
+		"messages": "{{item.transcript}}", "tool_definitions": "{{item.tool_definitions}}",
+	}, request.TestingCriteria[0].DataMapping)
 }
 
 func TestMappingSharedColumnSatisfiesEveryCriterion(t *testing.T) {
@@ -166,7 +171,12 @@ func TestMappingExplicitInteractionOverridesDefaults(t *testing.T) {
 			request, err := buildEvalRequest(
 				group, map[string]*eval_api.EvaluatorSummary{ref.Evaluator: contract}, tc.columns)
 			require.NoError(t, err)
-			require.Equal(t, tc.mapping, request.TestingCriteria[0].DataMapping)
+			want := map[string]string{"tool_definitions": "{{item.tool_definitions}}"}
+			if _, messages := tc.mapping["messages"]; !messages {
+				want["tool_calls"] = "{{item.tool_calls}}"
+			}
+			maps.Copy(want, tc.mapping)
+			require.Equal(t, want, request.TestingCriteria[0].DataMapping)
 			require.Equal(t, tc.mapping, ref.DataMapping, "do not mutate the authored mapping")
 			properties, ok := request.DataSourceConfig.ItemSchema["properties"].(map[string]any)
 			require.True(t, ok)
@@ -210,31 +220,34 @@ func TestMappingGeneratedResponseProvenance(t *testing.T) {
 	}
 }
 
-func TestMappingStaticMessagesAtTurnLevel(t *testing.T) {
+func TestMappingExplicitStaticMessagesAtTurnLevel(t *testing.T) {
 	contract := schema("builtin.groundedness", nil, []string{"query", "response", "messages"}, nil, nil, "turn")
-	group := groupWith([]evalcore.EvaluatorRef{{Evaluator: contract.Name}}, "turn")
+	group := groupWith([]evalcore.EvaluatorRef{{
+		Evaluator: contract.Name, DataMapping: map[string]string{"messages": "{{item.messages}}"},
+	}}, "turn")
 	group.Target = nil
 	request, err := buildEvalRequest(group, map[string]*eval_api.EvaluatorSummary{contract.Name: contract},
 		map[string]bool{"messages": true})
 	require.NoError(t, err)
-	require.Equal(t, map[string]string{"messages": "{{item.messages}}"}, request.TestingCriteria[0].DataMapping)
+	require.Equal(t, map[string]string{
+		"messages": "{{item.messages}}", "tool_definitions": "{{item.tool_definitions}}",
+	}, request.TestingCriteria[0].DataMapping)
 }
 
-func TestMappingPreviewTurnTraceKeepsExistingBindings(t *testing.T) {
+func TestMappingPreviewTurnTraceUsesCompletedItems(t *testing.T) {
 	for _, withTarget := range []bool{false, true} {
 		contract := schema("judge", []string{"response"}, []string{"query", "response"}, nil, nil, "turn")
 		contract.Definition.DataSchema.Properties["response"] = map[string]any{"type": "string"}
 		group := groupWith([]evalcore.EvaluatorRef{{Evaluator: "judge"}}, "turn")
 		group.Source = &project.SourceDecl{Type: project.SourceTypeTraces, AgentName: "recorded"}
-		want := "{{sample.output_items}}"
 		if !withTarget {
 			group.Target = nil
-			want = "{{item.response}}"
 		}
 		request, err := buildEvalRequest(group, map[string]*eval_api.EvaluatorSummary{"judge": contract}, nil)
 		require.NoError(t, err)
-		require.Equal(t, want, request.TestingCriteria[0].DataMapping["response"],
-			"legacy trace samples do not establish the preview turn-trace mapping")
+		require.Equal(t, "{{item.response}}", request.TestingCriteria[0].DataMapping["response"],
+			"a trace target filters existing interactions instead of invoking the target")
+		require.False(t, request.DataSourceConfig.IncludeSampleSchema)
 	}
 }
 
@@ -242,17 +255,19 @@ func TestMappingGroundednessAcceptsActualStructuredRows(t *testing.T) {
 	contract := schema("builtin.groundedness", []string{"response"}, []string{
 		"query", "response", "context", "tool_definitions",
 	}, nil, nil, "turn")
-	group := groupWith([]evalcore.EvaluatorRef{{Evaluator: contract.Name}}, "turn")
+	group := groupWith([]evalcore.EvaluatorRef{{
+		Evaluator: contract.Name, DataMapping: map[string]string{"context": "{{item.context}}"},
+	}}, "turn")
 	group.Target = nil
 	request, err := buildEvalRequest(group, map[string]*eval_api.EvaluatorSummary{contract.Name: contract},
-		map[string]bool{"query": true, "response": true, "context": true, "tool_definitions": true})
+		map[string]bool{"query": true, "response": true, "context": true, "tool_definitions": true, "tool_calls": true})
 	require.NoError(t, err)
 	var rows []map[string]any
 	require.NoError(t, json.Unmarshal([]byte(`[
-		{"query":"What is the weather?","response":"Rainy.","context":"It is raining.","tool_definitions":[]},
+		{"query":"Weather?","response":"Rainy.","context":"It is raining.","tool_definitions":[],"tool_calls":[]},
 		{"query":[{"role":"user","content":"What is the weather?"}],
 		 "response":[{"role":"tool","content":"Rainy."},{"role":"assistant","content":"It is raining."}],
-		 "context":"Weather observation.","tool_definitions":[{"name":"weather"}]}
+		 "context":"Weather observation.","tool_definitions":[{"name":"weather"}],"tool_calls":[{"name":"weather"}]}
 	]`), &rows))
 	compiler := jsonschema.NewCompiler()
 	require.NoError(t, compiler.AddResource("https://fixture.test/item.json", request.DataSourceConfig.ItemSchema))

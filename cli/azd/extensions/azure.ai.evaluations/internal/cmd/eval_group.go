@@ -49,7 +49,8 @@ func newEvalCreateCommand() *cobra.Command {
 			"The name is optional while the configuration declares exactly one eval.\n\n" +
 			"Evaluator inputs receive explicit default data mappings. Override them with data_mapping " +
 			"in the evaluator reference. Map messages or separate query/response fields, never both. " +
-			"For groundedness, include supporting context or tool results in the interaction.",
+			"Defaults retain tool_definitions and, at turn level, tool_calls. " +
+			"Map context or ground_truth explicitly when needed; catalog properties do not supply missing data.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return (&evalCreateAction{cmd: cmd, flags: flags, name: firstArg(args)}).Run()

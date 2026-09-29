@@ -88,25 +88,41 @@ directive. Edit the referenced file, or generate under a different name.
 ### Evaluator data mappings
 
 The CLI sends explicit `data_mapping` entries; it does not rely on server
-auto-mapping. Defaults use the evaluator's published input contract and the
-available dataset columns:
+auto-mapping. Standard datasets and trace sources use the following complete
+defaults, regardless of which optional properties the evaluator catalog lists:
+
+| Evaluation level | Default `data_mapping` |
+| --- | --- |
+| Turn (including an omitted level) | `query: "{{item.query}}"`, `response: "{{item.response}}"`, `tool_calls: "{{item.tool_calls}}"`, `tool_definitions: "{{item.tool_definitions}}"` |
+| Conversation | `messages: "{{item.messages}}"`, `tool_definitions: "{{item.tool_definitions}}"` |
+
+Optional tool columns stay in the mapping even when absent from a local dataset.
+The CLI does **not** infer `context`, `ground_truth`, or other evaluator-specific
+inputs from catalog properties, even when a matching column exists. Map those
+inputs explicitly when needed. An additional required evaluator input without
+a mapping is refused with instructions to provide real source data.
+
+Generated and retrieved responses have distinct output sources:
 
 | Evaluation input | Default response or interaction binding |
 | --- | --- |
-| Stored dataset query/response rows | `query: "{{item.query}}"`, `response: "{{item.response}}"` |
 | Model target | `query: "{{item.query}}"`, `response: "{{sample.output_text}}"` |
 | Agent target or stored response IDs | `response: "{{sample.output_items}}"` for structured responses; `response: "{{sample.output_text}}"` when the evaluator declares a string-only response |
-| Static or simulated conversations | `messages: "{{item.messages}}"` |
+| Simulated conversations | `messages: "{{item.messages}}"`, `tool_definitions: "{{item.tool_definitions}}"` |
+
+Agent-generated tool inputs use `sample.tool_calls` and
+`sample.tool_definitions`. A target name used to filter traces does not invoke
+the agent: trace mappings always use the completed `item` fields above.
 
 `messages` and separate `query`/`response` mappings are alternative interaction
-formats, never combined. A static dataset containing only `messages` can also
-be scored at turn level; the run's `evaluation_level` still controls the scoring
-level. When no evaluator input schema is available, conversation-level defaults
-still bind `messages` rather than sending an empty mapping.
+formats, never combined. To score a messages-only static dataset at turn level,
+explicitly set `data_mapping: {messages: "{{item.messages}}"}`. The run's
+`evaluation_level` still controls the scoring level.
 
 An explicit mapping overrides the corresponding default without changing the
-authored configuration. Mapping `messages` suppresses inferred `query` and
-`response` entries; mapping either turn field suppresses inferred `messages`.
+authored configuration. Mapping `messages` selects conversation-format defaults,
+including `tool_definitions`; mapping either turn field selects turn-format
+defaults, including `tool_calls` and `tool_definitions`.
 Explicitly combining both formats or supplying an empty binding is rejected.
 Renamed columns retain the standard evaluator input's type:
 
@@ -122,12 +138,15 @@ evaluators:
 ```
 
 For groundedness, a stored text response uses supporting `context` from the
-dataset. Structured responses can instead include tool results, and complete
+dataset through an explicit mapping. Structured responses can instead include tool results, and complete
 conversations use `messages`. `query` and `response` accept strings or arrays of
 message objects; `tool_definitions` accepts a string, object, or array of objects.
 These values are sent without flattening them into strings. If the dataset uses
 nonstandard names, map them explicitly as above. A mapping cannot supply context
 that the dataset or recorded interaction does not contain.
+These client mappings do not guarantee a successful groundedness score. Missing
+grounding data or a service-side evaluator error still needs investigation using
+the actual input and per-evaluator output.
 
 See the Foundry documentation for
 [groundedness inputs](https://learn.microsoft.com/azure/foundry/concepts/evaluation-evaluators/rag-evaluators#using-rag-evaluators),
