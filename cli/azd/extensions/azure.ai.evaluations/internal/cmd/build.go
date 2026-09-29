@@ -7,9 +7,11 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"reflect"
 	"slices"
 	"strings"
 
+	"azureaieval/internal/exterrors"
 	"azureaieval/internal/messages"
 	"azureaieval/internal/pkg/eval_api"
 	"azureaieval/internal/pkg/evalcore"
@@ -66,20 +68,21 @@ var sampleBindings = map[string]string{
 // sampleBindingsFor returns the run-time bindings a target of this kind can
 // satisfy. An empty target kind means nothing is invoked, so nothing is bound.
 //
-// A model target gets none: a model answers as plain text and calls no tools,
-// so binding an agent's richer output would leave the evaluator waiting on
-// fields the run never produces.
+// A model target supplies plain text, not an agent's structured tool output.
 func sampleBindingsFor(targetType string) map[string]string {
 	if targetType == project.TargetTypeAgent {
 		return sampleBindings
+	}
+	if targetType == project.TargetTypeModel {
+		return map[string]string{"response": "{{sample.output_text}}"}
 	}
 	return nil
 }
 
 // legacyInputs is the mapping used when the service publishes no schema for an
 // evaluator, which is the case for freshly uploaded custom evaluators. It
-// matches the agent-target shape.
-var legacyInputs = []string{"query", "response", "tool_calls", "tool_definitions"}
+// includes both interaction formats; selectLevelFields chooses one.
+var legacyInputs = []string{"query", "response", "tool_calls", "tool_definitions", "messages"}
 
 // criterionPlan is the resolved binding for one evaluator.
 type criterionPlan struct {
@@ -103,14 +106,8 @@ var turnFields = []string{"query", "response"}
 
 // selectLevelFields resolves the conversation/turn exclusivity for evaluators
 // that accept both shapes, keeping whichever matches the evaluation level.
-// Required fields are never dropped, so a genuine conflict still surfaces as a
-// missing-field error rather than being silently reshaped.
-func selectLevelFields(accepted, required []string, level string) []string {
-	isRequired := make(map[string]bool, len(required))
-	for _, name := range required {
-		isRequired[name] = true
-	}
-
+// The interaction formats are alternatives, not cumulative requirements.
+func selectLevelFields(accepted []string, level string) []string {
 	acceptsConversation := false
 	acceptsTurn := false
 	for _, field := range accepted {
@@ -138,7 +135,7 @@ func selectLevelFields(accepted, required []string, level string) []string {
 
 	kept := make([]string, 0, len(accepted))
 	for _, field := range accepted {
-		if drop[field] && !isRequired[field] {
+		if drop[field] {
 			continue
 		}
 		kept = append(kept, field)
@@ -170,7 +167,29 @@ func planCriterion(
 		accepted = dataSchema.PropertyNames()
 		required = dataSchema.Required
 	}
-	accepted = selectLevelFields(accepted, required, level)
+	_, explicitMessages := ref.DataMapping[conversationField]
+	_, explicitQuery := ref.DataMapping["query"]
+	_, explicitResponse := ref.DataMapping["response"]
+	if explicitMessages && (explicitQuery || explicitResponse) {
+		return nil, exterrors.Validation(exterrors.CodeConflictingArguments,
+			fmt.Sprintf("evaluator %q: data_mapping combines messages with query or response", ref.Evaluator),
+			"Map messages for a complete interaction, or query and response separately, but not both.")
+	}
+	mappingLevel := level
+	switch {
+	case explicitMessages:
+		mappingLevel = project.EvaluationLevelConversation
+	case explicitQuery || explicitResponse:
+		mappingLevel = project.EvaluationLevelTurn
+	case len(targetBindings) == 0 && datasetColumns[conversationField] &&
+		!datasetColumns["query"] && !datasetColumns["response"]:
+		mappingLevel = project.EvaluationLevelConversation
+	}
+	if schema.DataSchema() == nil && strings.EqualFold(mappingLevel, project.EvaluationLevelConversation) {
+		accepted = []string{conversationField}
+	}
+	allAccepted := accepted
+	accepted = selectLevelFields(accepted, mappingLevel)
 
 	plan := &criterionPlan{
 		dataMapping: map[string]string{},
@@ -178,6 +197,10 @@ func planCriterion(
 	}
 
 	for _, field := range accepted {
+		if (explicitMessages && contains(turnFields, field)) ||
+			((explicitQuery || explicitResponse) && field == conversationField) {
+			continue
+		}
 		if binding, ok := targetBindings[field]; ok {
 			plan.dataMapping[field] = binding
 			continue
@@ -189,14 +212,28 @@ func planCriterion(
 			continue
 		}
 		plan.dataMapping[field] = fmt.Sprintf("{{item.%s}}", field)
-		plan.itemFields = append(plan.itemFields, field)
 	}
 
 	// A declared mapping is the author saying the inference got it wrong, so it
 	// wins. Anything it binds to an item column is a column the schema has to
 	// declare, whether or not inference found it.
-	for field, binding := range ref.DataMapping {
+	for _, field := range slices.Sorted(maps.Keys(ref.DataMapping)) {
+		binding := ref.DataMapping[field]
+		if strings.TrimSpace(binding) == "" {
+			return nil, exterrors.Validation(exterrors.CodeInvalidParameter,
+				fmt.Sprintf("evaluator %q: data_mapping for %q is empty", ref.Evaluator, field),
+				"Supply a dataset or sample binding, or remove the entry to use its default.")
+		}
 		plan.dataMapping[field] = binding
+		if column, ok := itemColumn(binding); ok {
+			if datasetColumns != nil && !datasetColumns[column] {
+				return nil, messages.EvaluatorNeedsFields(ref.Evaluator, []string{column})
+			}
+		}
+	}
+	// Derive columns from the final mapping, not from defaults an override replaced.
+	for _, field := range slices.Sorted(maps.Keys(plan.dataMapping)) {
+		binding := plan.dataMapping[field]
 		if column, ok := itemColumn(binding); ok && !contains(plan.itemFields, column) {
 			plan.itemFields = append(plan.itemFields, column)
 		}
@@ -204,6 +241,16 @@ func planCriterion(
 
 	var missing []string
 	for _, field := range required {
+		if contains(allAccepted, field) && !contains(accepted, field) {
+			if strings.EqualFold(mappingLevel, project.EvaluationLevelConversation) {
+				if _, ok := plan.dataMapping[conversationField]; !ok && !contains(missing, conversationField) {
+					missing = append(missing, conversationField)
+				}
+			} else if plan.dataMapping["query"] == "" && plan.dataMapping["response"] == "" {
+				missing = append(missing, "query", "response")
+			}
+			continue
+		}
 		if _, ok := plan.dataMapping[field]; !ok {
 			missing = append(missing, field)
 		}
@@ -366,6 +413,12 @@ func buildEvalRequest(
 		}
 	}
 	targetBindings := sampleBindingsFor(targetType)
+	retrievedResponses := group.Source != nil && group.Source.Type == project.SourceTypeResponses
+	if retrievedResponses {
+		// Retrieved responses expose generated sample output too, even though
+		// this run does not invoke a target.
+		targetBindings = sampleBindings
+	}
 
 	// A simulation is graded on the conversations the run creates, not on the
 	// seed rows it creates them from. The seeds carry test_case_description and
@@ -397,14 +450,31 @@ func buildEvalRequest(
 	}
 
 	itemFields := map[string]bool{}
+	itemProperties := map[string]any{}
 
 	for _, ref := range group.Evaluators {
-		schema := schemas[ref.Evaluator]
+		schema := schemas[evaluatorSchemaKey(ref.Evaluator, ref.Version)]
+		if schema == nil {
+			schema = schemas[ref.Evaluator]
+		}
 		if schema == nil {
 			schema = &eval_api.EvaluatorSummary{Name: ref.Evaluator}
 		}
 
-		plan, err := planCriterion(ref, schema, targetBindings, datasetColumns, level)
+		bindings := targetBindings
+		// The preview trace source has a separate, unverified turn contract.
+		// Do not infer its output namespace from target/response examples.
+		if group.Source == nil || group.Source.Type != project.SourceTypeTraces {
+			if dataSchema := schema.DataSchema(); dataSchema != nil &&
+				bindings["response"] == "{{sample.output_items}}" {
+				if property, ok := dataSchema.Properties["response"].(map[string]any); ok &&
+					property["type"] == "string" {
+					bindings = maps.Clone(bindings)
+					bindings["response"] = "{{sample.output_text}}"
+				}
+			}
+		}
+		plan, err := planCriterion(ref, schema, bindings, datasetColumns, level)
 		if err != nil {
 			return nil, err
 		}
@@ -426,6 +496,17 @@ func buildEvalRequest(
 		for _, field := range plan.itemFields {
 			itemFields[field] = true
 		}
+		for _, field := range slices.Sorted(maps.Keys(plan.dataMapping)) {
+			binding := plan.dataMapping[field]
+			if column, ok := itemColumn(binding); ok {
+				property := itemProperty(field)
+				if prior, exists := itemProperties[column]; exists && !reflect.DeepEqual(prior, property) {
+					itemProperties[column] = map[string]any{"allOf": []any{prior, property}}
+				} else {
+					itemProperties[column] = property
+				}
+			}
+		}
 
 		req.TestingCriteria = append(req.TestingCriteria, criterion)
 	}
@@ -439,11 +520,18 @@ func buildEvalRequest(
 
 	req.DataSourceConfig = &eval_api.DataSourceConfig{
 		Type:                "custom",
-		IncludeSampleSchema: hasTarget && !simulated,
+		IncludeSampleSchema: (hasTarget || retrievedResponses) && !simulated,
 		ItemSchema:          itemSchema(itemFields),
 	}
+	properties := req.DataSourceConfig.ItemSchema["properties"].(map[string]any)
+	maps.Copy(properties, itemProperties)
 	if simulated {
 		req.DataSourceConfig.ItemSchema["required"] = []string{conversationField}
+	}
+	if isResponsesEval(group) {
+		req.DataSourceConfig = &eval_api.DataSourceConfig{
+			Type: "azure_ai_source", Scenario: "responses",
+		}
 	}
 
 	return req, nil
@@ -457,17 +545,29 @@ func itemSchema(fields map[string]bool) map[string]any {
 	}
 	properties := map[string]any{}
 	for field := range fields {
-		if field == conversationField {
-			properties[field] = map[string]any{
-				"type":  "array",
-				"items": map[string]any{"type": "object"},
-			}
-		} else {
-			properties[field] = map[string]any{"type": "string"}
-		}
+		properties[field] = itemProperty(field)
 	}
 	return map[string]any{
 		"type":       "object",
 		"properties": properties,
+	}
+}
+
+// itemProperty describes the standard interaction formats, including tool
+// results needed for groundedness. Aliased columns use the evaluator field's
+// shape, not the spelling the dataset author chose for the column.
+func itemProperty(field string) map[string]any {
+	messages := map[string]any{"type": "array", "items": map[string]any{"type": "object"}}
+	switch field {
+	case conversationField:
+		return messages
+	case "query", "response":
+		return map[string]any{"anyOf": []any{map[string]any{"type": "string"}, messages}}
+	case "tool_definitions":
+		return map[string]any{"anyOf": []any{
+			map[string]any{"type": "string"}, map[string]any{"type": "object"}, messages,
+		}}
+	default:
+		return map[string]any{"type": "string"}
 	}
 }

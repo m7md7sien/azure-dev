@@ -66,7 +66,10 @@ func newGenerateCommand() *cobra.Command {
 			"Neither is an input to the other, so the jobs run together and each " +
 			"reports its own outcome; the command fails if either did.\n\n" +
 			"--from selects one or more of the sources the service generates the " +
-			"dataset from, and is repeatable.",
+			"dataset from, and is repeatable.\n\n" +
+			"When no instructions are supplied or detected, interactive generation offers " +
+			"Type instructions or Load from file. Use --agent-instruction or --agent-instruction-file " +
+			"to supply them directly; --no-prompt and --output json never ask.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return (&generateAction{cmd: cmd, flags: flags}).Run()
@@ -101,6 +104,9 @@ func newGenerateCommand() *cobra.Command {
 }
 
 func (a *generateAction) Run() error {
+	if err := validateInstructionFlags(a.cmd, &a.flags.shared); err != nil {
+		return err
+	}
 	dataset, evaluator := selectedArtifacts(a.flags.wantDataset, a.flags.wantEvaluator)
 	// Checked before any network work, so a flag that cannot apply
 	// costs nothing to find out about. Changed() rather than the value,
@@ -454,11 +460,13 @@ func nameIsAPathComponent(name string) bool {
 }
 
 type generationOutcome struct {
-	plan   generationPlan
-	ref    *project.ArtifactRef
-	report generationReport
-	output bytes.Buffer
-	err    error
+	plan     generationPlan
+	ref      *project.ArtifactRef
+	report   generationReport
+	output   bytes.Buffer
+	err      error
+	recovery string
+	guidance string
 }
 
 // runGenerations submits the plans from buildGeneratePlans concurrently.
@@ -534,7 +542,24 @@ func (ec *evalContext) runGenerations(
 			err = addEvaluatorToCatalog(cmd, flags.path, o.ref)
 		}
 		if err != nil {
+			o.err = err
 			failures = append(failures, err)
+		} else if o.ref != nil {
+			o.guidance = generationCatalogGuidance(flags.path, o.plan.Kind, o.ref.Name)
+		}
+	}
+
+	for i := range outcomes {
+		o := &outcomes[i]
+		if o.err != nil {
+			var err error
+			o.recovery, err = generationRecoveryCommand(*o, flags, ec.endpoint, ec.envName)
+			if err != nil {
+				failures = append(failures, err)
+			}
+		}
+		if o.guidance != "" && !isJSON(cmd) {
+			fmt.Fprint(out, messages.Warning(errors.New(o.guidance)))
 		}
 	}
 
@@ -554,6 +579,9 @@ func (ec *evalContext) runGenerations(
 	}
 
 	if len(failures) > 0 {
+		if !isJSON(cmd) {
+			writeGenerationPartial(out, outcomes)
+		}
 		return messages.SomeGenerationsFailed(failures)
 	}
 	// What was produced, what it was billed under, and the one command that
@@ -562,33 +590,68 @@ func (ec *evalContext) runGenerations(
 	// unlabelled, and the caller was left to work out that `init` was next and
 	// to retype every name it had just chosen for them.
 	if !isJSON(cmd) && !flags.noWait {
-		writeGenerationCompleted(out, outcomes)
+		writeGenerationCompleted(out, outcomes, flags.path)
 	}
 	return nil
 }
 
 // writeGenerationCompleted closes a successful generation.
-func writeGenerationCompleted(out io.Writer, outcomes []generationOutcome) {
+func writeGenerationCompleted(out io.Writer, outcomes []generationOutcome, configPath string) {
 	fmt.Fprint(out, messages.GenerationCompleted())
+	simulation := false
+	hasTarget, hasDataset := false, false
 	for i := range outcomes {
 		if id := outcomes[i].report.jobID; id != "" {
 			fmt.Fprint(out, messages.GenerationJobLine(string(outcomes[i].plan.Kind), id))
 		}
+		if outcomes[i].ref == nil {
+			continue
+		}
+		hasTarget = hasTarget || outcomes[i].plan.Agent != ""
+		if outcomes[i].plan.Kind == generateKindDataset {
+			hasDataset = true
+			simulation = outcomes[i].plan.EvaluationLevel == project.EvaluationLevelConversation
+		}
 	}
-	if next := initHandoff(outcomes); next != "" {
+	if incompatible := incompatibleHandoffEvaluator(outcomes); incompatible != nil {
+		fmt.Fprint(out, messages.HandoffEvaluatorIncompatible(incompatible.Name))
+	}
+	agent, dataset, level, evaluator := initHandoffInputs(outcomes)
+	if next := initHandoff(outcomes, configPath); next != "" {
 		fmt.Fprint(out, messages.FirstNextStep(next))
+		fmt.Fprint(out, messages.InitHandoffGuidance(simulation, hasTarget, hasDataset))
+	} else if dataset != "" || evaluator != "" {
+		fmt.Fprint(out, messages.InitHandoffManualInputs(printablePath(configPath), agent, dataset, level, evaluator))
+		fmt.Fprint(out, messages.InitHandoffGuidance(simulation, hasTarget, hasDataset))
 	}
 }
 
 // initHandoff is the `eval init` that turns what was just generated into an
-// eval, with every value it needs already filled in.
+// eval. Conversation seeds select simulation; init asks for the independent
+// simulation model rather than reusing the generation model.
 //
-// --target is included even though `init` can detect it: the handoff is
-// documented to run exactly as printed, and the detection depends on the
-// project being readable at the time it is run rather than at the time it was
-// printed.
-func initHandoff(outcomes []generationOutcome) string {
-	var agent, dataset, level, evaluator string
+// Known targets are included even though init can detect local services.
+// Guidance names unresolved target and dataset inputs without inventing them.
+func initHandoff(outcomes []generationOutcome, configPath string) string {
+	configPath = filepath.ToSlash(printablePath(configPath))
+	agent, dataset, level, evaluator := initHandoffInputs(outcomes)
+	for _, value := range []string{configPath, agent, dataset, level, evaluator} {
+		if !messages.CanInlineShellArg(value) {
+			return ""
+		}
+	}
+	if dataset == "" && evaluator == "" {
+		return ""
+	}
+	next := messages.InitHandoffCommand(agent, dataset, level, evaluator)
+	if configPath != "" {
+		next += " --path " + quoteForShell(configPath)
+	}
+	return next
+}
+
+func initHandoffInputs(outcomes []generationOutcome) (agent, dataset, level, evaluator string) {
+	incompatible := incompatibleHandoffEvaluator(outcomes)
 	for i := range outcomes {
 		o := &outcomes[i]
 		if o.ref == nil {
@@ -600,13 +663,34 @@ func initHandoff(outcomes []generationOutcome) string {
 			dataset = o.ref.Name
 			level = o.plan.EvaluationLevel
 		default:
-			evaluator = o.ref.Name
+			if o.ref != incompatible {
+				evaluator = o.ref.Name
+			}
 		}
 	}
-	if dataset == "" && evaluator == "" {
-		return ""
+	return agent, dataset, level, evaluator
+}
+
+func incompatibleHandoffEvaluator(outcomes []generationOutcome) *project.ArtifactRef {
+	var level string
+	var evaluator *project.ArtifactRef
+	for _, outcome := range outcomes {
+		if outcome.ref == nil {
+			continue
+		}
+		if outcome.plan.Kind == generateKindDataset {
+			level = outcome.plan.EvaluationLevel
+		} else {
+			evaluator = outcome.ref
+		}
 	}
-	return messages.InitHandoffCommand(agent, dataset, level, evaluator)
+	if level != "" && evaluator != nil &&
+		!initEvaluatorSupportsLevel(&project.EvaluatorDecl{
+			SupportedEvaluationLevels: evaluator.SupportedEvaluationLevels,
+		}, level) {
+		return evaluator
+	}
+	return nil
 }
 
 // generationDocument keys each outcome by the artifact it was for, so a caller
@@ -619,22 +703,29 @@ func generationDocument(outcomes []generationOutcome) map[string]any {
 	produced := map[string]any{}
 	for i := range outcomes {
 		o := &outcomes[i]
-		var entry any
-		switch {
-		case o.ref != nil:
-			entry = o.ref
-		case o.report.jobID != "":
-			entry = map[string]string{"job_id": o.report.jobID}
+		entry := generationResult{
+			ArtifactRef: o.ref,
+			Status:      "submitted",
+			JobID:       o.report.jobID,
+			Warnings:    o.report.warnings,
+			Recovery:    o.recovery,
+			Guidance:    o.guidance,
 		}
+		if o.ref != nil {
+			entry.Status = "succeeded"
+		}
+		if o.err != nil {
+			entry.Status = "failed"
+			entry.Error = o.err.Error()
+			if o.ref != nil {
+				entry.Status = "catalog_failed"
+			}
+			entry.RetryGuidance = messages.GenerationRetryGuidance(string(o.plan.Kind), o.report.jobID != "")
+		}
+		// Preserve the existing warned-artifact envelope.
 		if len(o.report.warnings) > 0 {
-			warned := map[string]any{"warnings": o.report.warnings}
-			if entry != nil {
-				warned["artifact"] = entry
-			}
-			if o.report.jobID != "" {
-				warned["job_id"] = o.report.jobID
-			}
-			entry = warned
+			entry.Artifact = o.ref
+			entry.ArtifactRef = nil
 		}
 		produced[string(o.plan.Kind)] = entry
 	}

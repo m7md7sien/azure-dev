@@ -6,6 +6,9 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"io"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -43,6 +46,18 @@ func TestWritePortalLink_SilentWithoutAURL(t *testing.T) {
 // to wrap the URL and nothing else: one leaking into the label, or past the
 // newline, follows the link into whatever a reader pastes it in.
 func TestWritePortalLink_WrapsOnlyTheURL(t *testing.T) {
+	// fatih/color caches NO_COLOR on each color's first use. A fresh process
+	// keeps this assertion independent of earlier tests and the caller's env.
+	const helper = "AZD_TEST_PORTAL_COLOR"
+	if os.Getenv(helper) != "1" {
+		binary, err := os.Executable()
+		require.NoError(t, err)
+		child := exec.CommandContext(t.Context(), binary, "-test.run=^TestWritePortalLink_WrapsOnlyTheURL$")
+		child.Env = append(os.Environ(), "NO_COLOR=", helper+"=1")
+		output, err := child.CombinedOutput()
+		require.NoError(t, err, "%s", output)
+		return
+	}
 	restore := color.NoColor
 	color.NoColor = false
 	t.Cleanup(func() { color.NoColor = restore })
@@ -141,4 +156,36 @@ func TestRenderRunOmitsAnAbsentLink(t *testing.T) {
 	}, nil))
 
 	assert.NotContains(t, buf.String(), "Report:")
+}
+
+func TestHumanRunLinksRedactCredentialsOnInjectedWriter(t *testing.T) {
+	for _, raw := range []string{
+		"https://fixture-user:fixture-password@service.example/report?sig=fixture-signature#fixture-fragment",
+		"https:/fixture-user:fixture-password@service.example/report?sig=fixture-signature#fixture-fragment",
+	} {
+		for _, field := range []string{"report", "portal"} {
+			run := &eval_api.OpenAIEvalRun{ID: "run_link", EvalID: "eval_link", Status: "completed"}
+			if field == "report" {
+				run.ReportURL = raw
+			} else {
+				run.PortalURL = raw
+			}
+			for _, render := range []func(io.Writer) error{
+				func(w io.Writer) error { writePortalLink(w, raw); return nil },
+				func(w io.Writer) error { return renderRun(w, run, nil) },
+				func(w io.Writer) error { return renderRunDetail(w, run) },
+				func(w io.Writer) error { return renderResults(w, run.EvalID, run, nil, false) },
+			} {
+				var out bytes.Buffer
+				require.NoError(t, render(&out))
+				assert.Contains(t, out.String(), "Portal:")
+				for _, secret := range []string{
+					"fixture-user", "fixture-password", "fixture-signature", "fixture-fragment",
+				} {
+					assert.NotContains(t, out.String(), secret)
+				}
+			}
+			assert.Equal(t, raw, runLink(run.ReportURL, run.PortalURL), "display must not change service data")
+		}
+	}
 }

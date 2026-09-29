@@ -96,8 +96,7 @@ func resolveInstruction(inline, path string) (string, error) {
 	if path == "" {
 		return inline, nil
 	}
-	// #nosec G304 -- path is the file the caller named on the command line.
-	raw, err := os.ReadFile(path)
+	raw, err := project.ReadFileNoBOM(path)
 	if err != nil {
 		return "", messages.ReadingInstructionFile(path, err)
 	}
@@ -195,15 +194,13 @@ func (ec *evalContext) resolveGenerationInstruction(
 	// service marked input_quality, so this is asked rather than shrugged at:
 	// the caller knows what the agent is for, and one sentence is the whole
 	// difference between a usable rubric and a billed job that grades noise.
-	fmt.Fprint(out, messages.InstructionsNotDetected())
+	if !quiet {
+		fmt.Fprint(out, messages.InstructionsNotDetected())
+	}
 	if noPrompt(cmd) {
 		return "", "", messages.InstructionsRequired()
 	}
-	typed, err := promptAgentInstruction(cmd)
-	if err != nil {
-		return "", "", err
-	}
-	return typed, messages.InstructionSourceTyped(), nil
+	return promptAgentInstruction(cmd)
 }
 
 // agentInstructionsFromProject reads the agent's instructions out of the azd
@@ -347,16 +344,21 @@ func (ec *evalContext) collectRubric(
 	}
 
 	path := project.ArtifactPath(baseDir, outputDir, name, ".json")
+	ref := &project.ArtifactRef{
+		Name:                      name,
+		Source:                    relativeSource(baseDir, path),
+		Version:                   version,
+		DisplayName:               completed.ResultString("display_name"),
+		Categories:                completed.ResultStringList("categories"),
+		SupportedEvaluationLevels: completed.ResultStringList("supported_evaluation_levels"),
+	}
 	// A rubric is meant to be edited -- that is what the local file is for -- and
 	// `job show` is documented as safe to re-run while polling. Collecting again
 	// over an edited file made those two claims contradict each other.
 	if !replaceExisting && artifactAlreadyCollected(path) {
 		fmt.Fprint(out, messages.ArtifactLeftAlone(path))
-		return &project.ArtifactRef{
-			Name:    name,
-			Source:  relativeSource(baseDir, path),
-			Version: version,
-		}, nil
+		ref.PreserveCatalogMetadata = true
+		return ref, nil
 	}
 	if err := writeRubric(path, completed.Result); err != nil {
 		return nil, err
@@ -364,18 +366,7 @@ func (ec *evalContext) collectRubric(
 	fmt.Fprint(out, messages.WroteArtifact(path))
 	writeJobWarnings(out, "evaluator", completed, path)
 
-	return &project.ArtifactRef{
-		Name:    name,
-		Source:  relativeSource(baseDir, path),
-		Version: version,
-		// Catalog metadata, preserved exactly as the service returned it. The
-		// declaration is what `azd up` republishes from, and a version published
-		// without these arrives with a blank catalog name and narrower level
-		// compatibility than the one before it.
-		DisplayName:               completed.ResultString("display_name"),
-		Categories:                completed.ResultStringList("categories"),
-		SupportedEvaluationLevels: completed.ResultStringList("supported_evaluation_levels"),
-	}, nil
+	return ref, nil
 }
 
 // writeJobWarnings reports what the service said about a job it completed.

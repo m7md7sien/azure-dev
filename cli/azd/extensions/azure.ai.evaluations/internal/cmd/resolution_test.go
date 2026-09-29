@@ -53,23 +53,18 @@ func TestSampleBindingsFor_UnknownTargetBindsNothing(t *testing.T) {
 func TestSelectLevelFields_KeepsOnlyTheLevelsShape(t *testing.T) {
 	accepted := []string{"query", "response", "messages", "tool_definitions"}
 
-	conv := selectLevelFields(accepted, nil, project.EvaluationLevelConversation)
+	conv := selectLevelFields(accepted, project.EvaluationLevelConversation)
 	assert.Contains(t, conv, "messages")
 	assert.NotContains(t, conv, "query")
 	assert.NotContains(t, conv, "response")
 	assert.Contains(t, conv, "tool_definitions", "fields outside the split are untouched")
 
-	turn := selectLevelFields(accepted, nil, project.EvaluationLevelTurn)
+	turn := selectLevelFields(accepted, project.EvaluationLevelTurn)
 	assert.Contains(t, turn, "query")
 	assert.Contains(t, turn, "response")
 	assert.NotContains(t, turn, "messages")
 
 	// An evaluator offering only one shape is left alone, whatever the level.
 	only := []string{"query", "response"}
-	assert.Equal(t, only, selectLevelFields(only, nil, project.EvaluationLevelConversation))
-
-	// A required field is never dropped: a genuine conflict has to surface as a
-	// missing-field error rather than being reshaped away.
-	kept := selectLevelFields(accepted, []string{"query"}, project.EvaluationLevelConversation)
-	assert.Contains(t, kept, "query", "a required field survives the level filter")
+	assert.Equal(t, only, selectLevelFields(only, project.EvaluationLevelConversation))
 }

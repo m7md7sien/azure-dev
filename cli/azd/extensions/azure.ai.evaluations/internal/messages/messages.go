@@ -283,6 +283,11 @@ func ExportCompleteResults(eval, runID string) string {
 		shellArg(eval), shellArg(runID), shellArg(runID))
 }
 
+// ExportAvailableResults offers a snapshot without claiming a moving run is complete.
+func ExportAvailableResults(eval, runID string) string {
+	return "\nExport available results:\n" + exportRunCommand(eval, runID)
+}
+
 // EvalNotDeployed reports an eval id the project does not hold.
 func EvalNotDeployed(evalID, deployCmd string) error {
 	return fmt.Errorf(
@@ -348,6 +353,12 @@ func RunMustBeNamed(evalID string) error {
 			"and a command that changes a run will not pick one for you. "+
 			"`azd ai eval run list --eval %s` shows the runs there are",
 		evalID, shellArg(evalID))
+}
+
+// ListedRunMissingID refuses to guess an identifier omitted by the service.
+func ListedRunMissingID(evalID string) error {
+	return fmt.Errorf("the service omitted the newest run ID for eval %q; "+
+		"supply --run with a known run ID instead of selecting the latest run", evalID)
 }
 
 // ReadingRun reports a failure to read the run the caller named.
@@ -551,22 +562,14 @@ func NoRowsScored() string {
 	return "\nNo rows have been scored yet.\n"
 }
 
-// SamplesNeedingALook closes a --failed-only listing, holding the rows that
-// failed apart from the rows nothing managed to score.
-//
-// One count covering both contradicted the totals printed two lines above it,
-// which is what a reader compares it with: a run reporting 5 failed and 8
-// errored closed with "13 sample(s) failed at least one evaluator".
-// FilteredItemCount closes a filtered listing by naming the filter it applied.
-//
-// --failed-only used to keep rows nothing had scored and then count them as
-// failures, so the footer contradicted the totals directly above it.
-//
-// Phrased as "6 of 15 test cases failed" rather than "are failed": the status
-// reads as the verb, which is what the results spec prints and what a reader
-// says out loud.
-func FilteredItemCount(shown, total int, status string) string {
-	return fmt.Sprintf("\n%d of %d test cases %s\n", shown, total, status)
+// FilteredItemCount names only the rows displayed, not the run's total failures.
+func FilteredItemCount(shown int, status string) string {
+	return fmt.Sprintf("\nShowing %s on this page.\n", countOf(shown, status+" test case"))
+}
+
+// FilteredRunTotal distinguishes the service's matching and full-run totals.
+func FilteredRunTotal(matching, total int, status string) string {
+	return fmt.Sprintf("Full run: %d %s of %s (service-reported).\n", matching, status, countOf(total, "total test case"))
 }
 
 // UnknownItemStatus reports a --status value that names no outcome.
@@ -661,6 +664,12 @@ func EnterDatasetHelp() string {
 // DatasetIsRequired refuses an empty answer to that prompt.
 func DatasetIsRequired() string {
 	return "A dataset-backed evaluation needs a dataset to grade."
+}
+
+// InitDatasetRejected explains how to correct an unusable local dataset.
+func InitDatasetRejected(why error) string {
+	return fmt.Sprintf("\n  %v\n  Correct the dataset file and enter its path or dataset name again, "+
+		"or choose another dataset. Press Ctrl+C to cancel.\n", why)
 }
 
 // SelectingDataset reports a failed dataset prompt.
@@ -957,15 +966,6 @@ func UsingLastRun(runID string) string {
 		"Using last run: %s (select a specific run with --run)\n", runID)
 }
 
-// PortalLinkAfterRows closes a per-sample listing with the run's one link.
-//
-// Labelled the way every other view labels it: the run's report page is in the
-// portal, and a reader looking for the link should not have to know two words
-// for it.
-func PortalLinkAfterRows(url string) string {
-	return fmt.Sprintf("\nPortal: %s\n", url)
-}
-
 // ExportFormatUnsupported reports an --format the export command cannot write.
 //
 // The recipe travels with the refusal. It was in the command's help, which is
@@ -1204,6 +1204,26 @@ func InstructionsNotDetected() string {
 	return "Agent instructions: not detected\n"
 }
 
+// SelectInstructionSourcePrompt asks how to supply missing generation context.
+func SelectInstructionSourcePrompt() string {
+	return "How would you like to provide agent instructions?"
+}
+
+// TypeInstructionsChoice selects direct instruction entry.
+func TypeInstructionsChoice() string { return "Type instructions" }
+
+// LoadInstructionsChoice selects an existing local instruction file.
+func LoadInstructionsChoice() string { return "Load from file" }
+
+// EnterInstructionFilePrompt asks for the file to read, not its contents.
+func EnterInstructionFilePrompt() string { return "Path to the agent instructions file:" }
+
+// EnterInstructionFileHelp describes the same input as --agent-instruction-file.
+func EnterInstructionFileHelp() string {
+	return "Path to a non-empty local text file, relative to the current directory or absolute. " +
+		"Enter the path without shell quotes; spaces are supported."
+}
+
 // EnterAgentInstructionPrompt asks what the agent is for.
 func EnterAgentInstructionPrompt() string {
 	return "What does this agent do, and what should good responses do?"
@@ -1253,7 +1273,9 @@ func GenerationJobLine(kind, jobID string) string {
 }
 
 // InitHandoffCommand is the `eval init` that turns generated artifacts into an
-// eval, with every value already filled in.
+// eval, carrying the known artifact choices. Conversation generation produces
+// seeds, so its handoff selects simulation. The simulation model is deliberately
+// omitted: generation does not establish which deployment should play the user.
 //
 // Printed resolved rather than as a shape. A reader who has just watched the
 // command choose a name, a level and an evaluator should not have to retype
@@ -1267,7 +1289,10 @@ func InitHandoffCommand(agent, dataset, level, evaluator string) string {
 	if dataset != "" {
 		cmd += " --source dataset --dataset " + ShellArg(dataset)
 		if level != "" {
-			cmd += " --evaluation-level " + level
+			cmd += " --evaluation-level " + ShellArg(level)
+		}
+		if level == "conversation" {
+			cmd += " --conversation-mode simulation"
 		}
 	}
 	if evaluator != "" {
@@ -2634,7 +2659,7 @@ func SourceNotADataSource(source, dataset, traces string) error {
 
 // TracesTakesNoDataset reports --dataset paired with a trace-backed eval.
 func TracesTakesNoDataset() error {
-	return errors.New("--source traces reads production traces, so it takes no --dataset")
+	return InitFlagConflict("dataset", "cannot be used with --source traces, which reads production traces")
 }
 
 // MaxTracesNeedsTraceSource reports --max-traces without a trace-backed eval.
@@ -3220,6 +3245,18 @@ func ResponsesSourceNeedsResponseIDs() error {
 	return errors.New("source.response_ids is required for a responses source")
 }
 
+// ResponsesSourceBlankResponseID identifies an invalid entry without printing stored response IDs.
+func ResponsesSourceBlankResponseID(index int) error {
+	return fmt.Errorf("source.response_ids[%d] must not be blank; supply a stored response ID or remove this entry", index)
+}
+
+// SourceSampleConflict refuses a dataset cap on a source-backed evaluation.
+func SourceSampleConflict(evalName string) error {
+	return exterrors.Validation(exterrors.CodeConflictingArguments,
+		fmt.Sprintf("--max-samples or max_samples cannot cap source-backed eval %q", evalName),
+		"Remove the dataset cap. For traces, use source.max_traces; for responses, select source.response_ids.")
+}
+
 // AtLeastOneEvaluatorRequired reports an eval that scores nothing.
 func AtLeastOneEvaluatorRequired(index int, eval string) error {
 	return fmt.Errorf("evals[%d] (%s): at least one evaluator is required", index, eval)
@@ -3617,7 +3654,7 @@ func MaxSamplesNegative(got int) error {
 			"Remove it to send every row, or set the number of rows to send", got)
 }
 
-// NegativeMaxSamplesFlag reports the same thing given on the command line.
+// NegativeMaxSamplesFlag reports a row cap below zero given on the command line.
 func NegativeMaxSamplesFlag(got int) error {
 	return fmt.Errorf(
 		"--max-samples cannot be negative, got %d. "+
@@ -4397,17 +4434,16 @@ func CouldNotReadAgentForModel(agent string, err error) string {
 // carried one of those characters would run it when pasted. They are named
 // rather than inlined: the command stops being copy-and-run for that argument,
 // which is the honest outcome, because it cannot be made both runnable and
-// safe here. Backslashes are left alone, so a Windows path comes back as itself.
+// safe here. Native path separators should be normalized by path-aware callers.
 func shellArg(v string) string {
 	if v == "" {
 		return `""`
 	}
-	// The three that cannot survive being wrapped: two expand, one breaks the
-	// quoting itself.
-	if strings.ContainsAny(v, "$`\"") {
+	// Expansion syntax and embedded quotes are not literal across the supported shells.
+	if !CanInlineShellArg(v) {
 		return shellArgNeedsQuoting
 	}
-	if !strings.ContainsAny(v, " \t\n'&|;<>()*?[]#~!") {
+	if !strings.ContainsAny(v, " \t\n'&|;<>()*?[]{}#~!@") {
 		return v
 	}
 	return `"` + v + `"`
@@ -4424,6 +4460,11 @@ const shellArgNeedsQuoting = "VALUE_NEEDS_QUOTING"
 // rule decides how every printed command quotes what it carries.
 func ShellArg(v string) string {
 	return shellArg(v)
+}
+
+// CanInlineShellArg reports whether ShellArg can preserve v across the supported shells.
+func CanInlineShellArg(v string) bool {
+	return !strings.ContainsAny(v, "$`\"%!\\^\r\n\x00")
 }
 
 // ConfirmDelete asks before removing something published.
