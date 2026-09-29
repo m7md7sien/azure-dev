@@ -28,6 +28,12 @@ func schema(
 		out := map[string]any{}
 		for _, n := range names {
 			out[n] = map[string]any{"type": "string"}
+			if n == "response" {
+				out[n] = map[string]any{"anyOf": []any{
+					map[string]any{"type": "string"},
+					map[string]any{"type": "array", "items": map[string]any{"type": "object"}},
+				}}
+			}
 		}
 		return out
 	}
@@ -259,7 +265,10 @@ func TestBuildResolvesConversationTurnExclusivity(t *testing.T) {
 	require.NotContains(t, mapping, "messages")
 	turnProperties, ok := req.DataSourceConfig.ItemSchema["properties"].(map[string]any)
 	require.True(t, ok)
-	require.Equal(t, map[string]any{"type": "string"}, turnProperties["query"])
+	require.Equal(t, map[string]any{"anyOf": []any{
+		map[string]any{"type": "string"},
+		map[string]any{"type": "array", "items": map[string]any{"type": "object"}},
+	}}, turnProperties["query"])
 
 	// Conversation level keeps messages and drops query/response.
 	conv := groupWith(withJudge("m", evalcore.EvaluatorRef{Evaluator: "builtin.task_completion"}),

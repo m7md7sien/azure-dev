@@ -46,7 +46,10 @@ func newEvalCreateCommand() *cobra.Command {
 			"`azd up` reconciles every eval in the file. This creates a single one, " +
 			"for a project that is not deployed as a whole — or, with --from-file, " +
 			"for no project at all.\n\n" +
-			"The name is optional while the configuration declares exactly one eval.",
+			"The name is optional while the configuration declares exactly one eval.\n\n" +
+			"Evaluator inputs receive explicit default data mappings. Override them with data_mapping " +
+			"in the evaluator reference. Map messages or separate query/response fields, never both. " +
+			"For groundedness, include supporting context or tool results in the interaction.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return (&evalCreateAction{cmd: cmd, flags: flags, name: firstArg(args)}).Run()

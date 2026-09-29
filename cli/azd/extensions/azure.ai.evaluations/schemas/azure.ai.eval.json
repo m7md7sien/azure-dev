@@ -297,7 +297,7 @@
         "data_mapping": {
           "type": "object",
           "additionalProperties": { "type": "string" },
-          "description": "Binds the evaluator's required inputs to dataset columns, for inputs beyond the agent shape such as ground_truth or context."
+          "description": "Overrides default evaluator input bindings using {{item.column}} or {{sample.field}}. Map messages or separate query/response fields, never both. Groundedness can use context from a dataset or tool results in structured responses."
         }
       }
     },

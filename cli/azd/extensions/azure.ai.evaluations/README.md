@@ -85,6 +85,55 @@ in the referenced file, so `azd ai eval generate` will not update it in place an
 says so rather than writing a second declaration of the same rubric beside the
 directive. Edit the referenced file, or generate under a different name.
 
+### Evaluator data mappings
+
+The CLI sends explicit `data_mapping` entries; it does not rely on server
+auto-mapping. Defaults use the evaluator's published input contract and the
+available dataset columns:
+
+| Evaluation input | Default response or interaction binding |
+| --- | --- |
+| Stored dataset query/response rows | `query: "{{item.query}}"`, `response: "{{item.response}}"` |
+| Model target | `query: "{{item.query}}"`, `response: "{{sample.output_text}}"` |
+| Agent target or stored response IDs | `response: "{{sample.output_items}}"` for structured responses; `response: "{{sample.output_text}}"` when the evaluator declares a string-only response |
+| Static or simulated conversations | `messages: "{{item.messages}}"` |
+
+`messages` and separate `query`/`response` mappings are alternative interaction
+formats, never combined. A static dataset containing only `messages` can also
+be scored at turn level; the run's `evaluation_level` still controls the scoring
+level. When no evaluator input schema is available, conversation-level defaults
+still bind `messages` rather than sending an empty mapping.
+
+An explicit mapping overrides the corresponding default without changing the
+authored configuration. Mapping `messages` suppresses inferred `query` and
+`response` entries; mapping either turn field suppresses inferred `messages`.
+Explicitly combining both formats or supplying an empty binding is rejected.
+Renamed columns retain the standard evaluator input's type:
+
+```yaml
+evaluators:
+  - evaluator: builtin.groundedness
+    initialization_parameters:
+      model: gpt-4.1-nano
+    data_mapping:
+      query: "{{item.question}}"
+      response: "{{item.answer}}"
+      context: "{{item.reference_text}}"
+```
+
+For groundedness, a stored text response uses supporting `context` from the
+dataset. Structured responses can instead include tool results, and complete
+conversations use `messages`. `query` and `response` accept strings or arrays of
+message objects; `tool_definitions` accepts a string, object, or array of objects.
+These values are sent without flattening them into strings. If the dataset uses
+nonstandard names, map them explicitly as above. A mapping cannot supply context
+that the dataset or recorded interaction does not contain.
+
+See the Foundry documentation for
+[groundedness inputs](https://learn.microsoft.com/azure/foundry/concepts/evaluation-evaluators/rag-evaluators#using-rag-evaluators),
+[target response bindings](https://learn.microsoft.com/azure/foundry/observability/how-to/cloud-evaluation-targets#set-up-evaluators-and-data-mappings),
+and [conversation mappings](https://learn.microsoft.com/azure/foundry/observability/how-to/cloud-evaluation-conversations#define-the-data-schema-and-evaluators).
+
 ### Registered dataset identity
 
 Runs bind registered datasets using the service-issued version ID, including
