@@ -320,7 +320,7 @@
         "data_mapping": {
           "type": "object",
           "additionalProperties": { "type": "string" },
-          "description": "Overrides default evaluator input bindings using {{item.column}} or {{sample.field}}. Map messages or separate query/response fields, never both. Groundedness can use context from a dataset or tool results in structured responses."
+          "description": "Overrides standard turn or conversation bindings using {{item.column}} or {{sample.field}}. Map messages or separate query/response fields, never both. Defaults retain tool_definitions and turn-level tool_calls. Additional inputs such as context and ground_truth require explicit mappings to actual source data."
         }
       }
     },

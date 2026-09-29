@@ -70,7 +70,10 @@ func TestBuildResponseScenarioLeavesOtherModesCustom(t *testing.T) {
 			if mode == "responses" {
 				assert.JSONEq(t, `{"type":"azure_ai_source","scenario":"responses"}`, string(raw))
 				for _, criterion := range req.TestingCriteria {
-					assert.Equal(t, map[string]string{"messages": "{{item.messages}}"}, criterion.DataMapping)
+					assert.Equal(t, map[string]string{
+						"messages":         "{{item.messages}}",
+						"tool_definitions": "{{sample.tool_definitions}}",
+					}, criterion.DataMapping)
 				}
 			} else {
 				assert.Equal(t, "custom", req.DataSourceConfig.Type)

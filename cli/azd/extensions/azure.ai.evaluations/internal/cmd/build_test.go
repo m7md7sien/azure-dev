@@ -113,7 +113,7 @@ func TestBuildRejectsUnsatisfiableEvaluator(t *testing.T) {
 	require.Contains(t, err.Error(), "instruction_kwargs")
 }
 
-// The same evaluator succeeds once the dataset supplies the columns.
+// Additional required inputs need explicit mappings to actual dataset columns.
 func TestBuildAcceptsEvaluatorWhenDatasetSupplies(t *testing.T) {
 	schemas := map[string]*eval_api.EvaluatorSummary{
 		"builtin.ifeval": schema("builtin.ifeval",
@@ -121,7 +121,12 @@ func TestBuildAcceptsEvaluatorWhenDatasetSupplies(t *testing.T) {
 			[]string{"response", "instruction_id_list", "instruction_kwargs"},
 			nil, nil, "turn"),
 	}
-	group := groupWith([]evalcore.EvaluatorRef{{Evaluator: "builtin.ifeval"}}, "")
+	group := groupWith([]evalcore.EvaluatorRef{{
+		Evaluator: "builtin.ifeval",
+		DataMapping: map[string]string{
+			"instruction_id_list": "{{item.instruction_id_list}}", "instruction_kwargs": "{{item.instruction_kwargs}}",
+		},
+	}}, "")
 
 	req, err := buildEvalRequest(group, schemas, map[string]bool{
 		"instruction_id_list": true,
@@ -340,11 +345,8 @@ func TestBuildSimulationGradesConversationsNotSeeds(t *testing.T) {
 	}
 }
 
-// Even when no criterion happens to bind it, the rows a simulation grades
-// arrive in `messages`, and a schema that omits that column describes a
-// different dataset than the one the run produces. This is the evaluator that
-// scores a conversation without declaring a column for it.
-func TestBuildSimulationDeclaresMessagesWithoutABinding(t *testing.T) {
+// Catalog property lists do not remove the standard conversation defaults.
+func TestBuildSimulationDefaultsIgnoreCatalogPropertyList(t *testing.T) {
 	schemas := map[string]*eval_api.EvaluatorSummary{
 		"builtin.violence": schema("builtin.violence",
 			nil, []string{"query", "response"},
@@ -356,8 +358,9 @@ func TestBuildSimulationDeclaresMessagesWithoutABinding(t *testing.T) {
 
 	req, err := buildEvalRequest(group, schemas, map[string]bool{"test_case_description": true})
 	require.NoError(t, err)
-	require.NotContains(t, req.TestingCriteria[0].DataMapping, "messages",
-		"no criterion bound the conversation column")
+	require.Equal(t, map[string]string{
+		"messages": "{{item.messages}}", "tool_definitions": "{{item.tool_definitions}}",
+	}, req.TestingCriteria[0].DataMapping)
 
 	properties, ok := req.DataSourceConfig.ItemSchema["properties"].(map[string]any)
 	require.True(t, ok, "item schema declares properties")
@@ -450,7 +453,9 @@ func TestBuildWithoutTargetSourcesEverythingFromDataset(t *testing.T) {
 			[]string{"query", "response", "ground_truth"},
 			nil, nil, "turn"),
 	}
-	group := groupWith([]evalcore.EvaluatorRef{{Evaluator: "builtin.similarity"}}, "")
+	group := groupWith([]evalcore.EvaluatorRef{{
+		Evaluator: "builtin.similarity", DataMapping: map[string]string{"ground_truth": "{{item.ground_truth}}"},
+	}}, "")
 	group.Target = nil
 
 	req, err := buildEvalRequest(group, schemas, map[string]bool{

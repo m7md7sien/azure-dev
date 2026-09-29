@@ -23,8 +23,10 @@ import (
 // examples, not a recorded service response. This proves client binding and
 // transport behavior, not hosted evaluator execution.
 func TestMappingWireUsesSourceValues(t *testing.T) {
-	const rowJSON = `{"query":"What is the weather?","response":"STALE dataset answer","context":"It is raining."}`
-	const conversationJSON = `{"messages":[{"role":"user","content":"Weather?"},{"role":"assistant","content":"Rain."}]}`
+	const rowJSON = `{"query":"Weather?","response":"STALE dataset answer","context":"It is raining.",` +
+		`"tool_calls":[],"tool_definitions":[]}`
+	const conversationJSON = `{"messages":[{"role":"user","content":"Weather?"},` +
+		`{"role":"assistant","content":"Rain."}],"tool_definitions":[]}`
 	const seedJSON = `{"test_case_description":"Ask about the weather."}`
 	for _, tc := range []struct {
 		name, mode, level, rows, evaluator string
@@ -32,24 +34,28 @@ func TestMappingWireUsesSourceValues(t *testing.T) {
 	}{
 		{"static groundedness", "static", "turn", rowJSON, "builtin.groundedness", map[string]string{
 			"query": "{{item.query}}", "response": "{{item.response}}", "context": "{{item.context}}",
+			"tool_calls": "{{item.tool_calls}}", "tool_definitions": "{{item.tool_definitions}}",
 		}},
 		{"model groundedness", "model", "turn", rowJSON, "builtin.groundedness", map[string]string{
 			"query": "{{item.query}}", "response": "{{sample.output_text}}", "context": "{{item.context}}",
+			"tool_calls": "{{item.tool_calls}}", "tool_definitions": "{{item.tool_definitions}}",
 		}},
 		{"agent groundedness", "agent", "turn", rowJSON, "builtin.groundedness", map[string]string{
 			"query": "{{item.query}}", "response": "{{sample.output_items}}", "context": "{{item.context}}",
+			"tool_calls": "{{sample.tool_calls}}", "tool_definitions": "{{sample.tool_definitions}}",
 		}},
 		{"retrieved text", "responses", "turn", "", "builtin.violence", map[string]string{
 			"query": "{{item.query}}", "response": "{{sample.output_text}}",
+			"tool_calls": "{{sample.tool_calls}}", "tool_definitions": "{{sample.tool_definitions}}",
 		}},
 		{"static conversation", "static", "conversation", conversationJSON, "builtin.groundedness",
-			map[string]string{"messages": "{{item.messages}}"}},
+			map[string]string{"messages": "{{item.messages}}", "tool_definitions": "{{item.tool_definitions}}"}},
 		{"static messages turn", "static", "turn", conversationJSON, "builtin.groundedness",
-			map[string]string{"messages": "{{item.messages}}"}},
+			map[string]string{"messages": "{{item.messages}}", "tool_definitions": "{{item.tool_definitions}}"}},
 		{"simulation", "simulation", "conversation", seedJSON, "builtin.groundedness",
-			map[string]string{"messages": "{{item.messages}}"}},
+			map[string]string{"messages": "{{item.messages}}", "tool_definitions": "{{item.tool_definitions}}"}},
 		{"traced conversation", "traces", "conversation", "", "builtin.task_completion",
-			map[string]string{"messages": "{{item.messages}}"}},
+			map[string]string{"messages": "{{item.messages}}", "tool_definitions": "{{item.tool_definitions}}"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			requests := make(chan identityRequest, 20)
@@ -104,6 +110,12 @@ func TestMappingWireUsesSourceValues(t *testing.T) {
 			group := &project.Eval{
 				Name: "mapping", Dataset: "d", EvaluationLevel: tc.level,
 				Evaluators: []evalcore.EvaluatorRef{{Evaluator: tc.evaluator}},
+			}
+			if tc.level == "turn" && tc.rows == rowJSON {
+				group.Evaluators[0].DataMapping = map[string]string{"context": "{{item.context}}"}
+			}
+			if tc.name == "static messages turn" {
+				group.Evaluators[0].DataMapping = map[string]string{"messages": "{{item.messages}}"}
 			}
 			configPath := ""
 			var columns map[string]bool
@@ -178,6 +190,7 @@ func TestMappingWireUsesSourceValues(t *testing.T) {
 			// values so accidentally grading a seed or stale response cannot pass.
 			sample := map[string]any{
 				"output_text": "Generated answer",
+				"tool_calls":  []any{}, "tool_definitions": []any{},
 				"output_items": []any{
 					map[string]any{"role": "tool", "content": "It is raining."},
 					map[string]any{"role": "assistant", "content": "Generated answer"},
