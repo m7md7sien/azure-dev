@@ -2,25 +2,26 @@
 
 <!-- cspell:ignore COLLECTIONURI COLLECTIONID DEFINITIONID JOBID JOBATTEMPT SOURCEVERSION -->
 
-**Local integration sample, not a published turnkey workflow.** This sample
+**Prepared-job integration sample; live execution NOT RUN.** This sample
 invokes one approved, existing hosted agent through `azd ai agent invoke`, then
 evaluates its actual response. It does not create, deploy, update or delete the
 agent. Full agent deployment CI/CD still needs a separate validated
 project/provider/deployment/teardown contract.
 
 The shared executor is a dependency of [production CI #10178](https://github.com/Azure/azure-dev/pull/10178),
-not duplicated here. The corrected local dependency is
-`eb9ce7c3e8e114b62304fb8fcf794ee3a82672f2`.
-It is **not published** by this sample and is not assumed present on `main`.
-No downloadable URL, approved release selection, cloud execution or new PR is
-claimed. Do not enable this sample until an authorized owner publishes and
-reviews both the executor and a compatible package tuple.
+not duplicated here. Its corrected, published immutable dependency is
+[`eb9ce7c3e8e114b62304fb8fcf794ee3a82672f2`](https://github.com/m7md7sien/azure-dev/commit/eb9ce7c3e8e114b62304fb8fcf794ee3a82672f2);
+see the [existing-agent executor contract](https://github.com/m7md7sien/azure-dev/blob/eb9ce7c3e8e114b62304fb8fcf794ee3a82672f2/docs/guides/evaluation-scenario-ci.md#existing-agent-cli-smoke-not-deployment).
+That source is not assumed merged into `main`. Source publication is not package
+approval or live execution. Do not activate this sample until an authorized owner
+reviews the caller, executor and compatible installed package tuple and supplies
+the existing protected identity/resource/plan inputs below.
 
 ## Files and dependency assembly
 
 | File | Purpose |
 | --- | --- |
-| [dependency.json](dependency.json) | Exact local source commit and SHA256 of every production Python module needed by this path |
+| [dependency.json](dependency.json) | Exact source commit and SHA256 of every production Python module needed by this path |
 | [run.py](run.py) | Verify dependency bytes and forward the plan unchanged to the single shared executor |
 | [github/action.yml](github/action.yml) | GitHub composite action for an already protected, prepared job |
 | [azure-pipelines.steps.yml](azure-pipelines.steps.yml) | ADO steps template for the same prepared-job contract |
@@ -39,11 +40,13 @@ modules or bytecode caches. Git's automatic CRLF conversion changes the pinned
 bytes and is deliberately rejected. The recorded hash map is not itself an approval authority:
 review and protect this sample and its caller as well as the executor.
 
-For local development, when the recorded commit is already in your own Git
-object database, export it without changing branches:
+For local development, fetch the immutable public source into your own Git
+object database and export it without changing branches:
 
 ```powershell
 $commit = "eb9ce7c3e8e114b62304fb8fcf794ee3a82672f2"
+git fetch --no-tags https://github.com/m7md7sien/azure-dev.git $commit
+if ($LASTEXITCODE -ne 0) { throw "Could not fetch the exact executor dependency" }
 $stage = Join-Path ([IO.Path]::GetTempPath()) ("agent-eval-" + [guid]::NewGuid())
 git -c core.autocrlf=false archive --format=zip --output="$stage.zip" $commit `
   eng/scripts/eval-scenario-ci eng/scripts/eval-candidate-proof
@@ -253,6 +256,6 @@ receipt's manual-reconciliation requirement.
 Logical deletion does not prove physical blob removal, remote cancellation or
 stopped billing. One invocation, one row and one run still incur inference,
 evaluation and possible storage/hosting charges. No live cost measurement or
-service run is claimed. GitHub/ADO activation, compatible published artifacts,
+service run is claimed. GitHub/ADO activation, compatible approved artifacts,
 existing identity/resource/spend approval and full deployment remain external
 dependencies.
