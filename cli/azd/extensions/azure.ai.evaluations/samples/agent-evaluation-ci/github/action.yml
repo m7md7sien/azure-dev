@@ -1,0 +1,33 @@
+name: Existing-agent evaluation smoke
+description: Invoke the pinned shared executor after protected package, identity and plan staging.
+inputs:
+  executor-root:
+    description: Local checkout containing the exact files in dependency.json
+    required: true
+  plan:
+    description: Absolute path to the externally approved per-run JSON plan
+    required: true
+  output-directory:
+    description: New absolute directory for sanitized evidence
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Invoke the shared agents and evaluations lifecycle
+      shell: bash
+      env:
+        SAMPLE_EXECUTOR_ROOT: ${{ inputs.executor-root }}
+        SAMPLE_PLAN: ${{ inputs.plan }}
+        SAMPLE_OUTPUT: ${{ inputs.output-directory }}
+      run: |
+        python "$GITHUB_ACTION_PATH/../run.py" \
+          --executor-root "$SAMPLE_EXECUTOR_ROOT" \
+          --plan "$SAMPLE_PLAN" --output "$SAMPLE_OUTPUT"
+    - name: Preserve sanitized outcome, including failed or blocked runs
+      if: ${{ always() }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: agent-evaluation-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+        path: ${{ inputs.output-directory }}/service-status.json
+        if-no-files-found: error
+        retention-days: 7

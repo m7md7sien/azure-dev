@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "mode": "existing-agent-cli-evaluation",
+  "provider": "github",
+  "workflowCommit": "",
+  "runId": "",
+  "expiresAt": "",
+  "ciIdentity": {
+    "repository": "",
+    "repositoryId": "",
+    "workflowRef": "",
+    "workflowSha": "",
+    "job": "",
+    "attempt": ""
+  },
+  "authorizedOperations": [
+    "agent-session-create",
+    "agent-invoke",
+    "agent-session-delete",
+    "dataset-create",
+    "dataset-delete",
+    "dataset-download",
+    "eval-create",
+    "eval-run",
+    "eval-export",
+    "eval-delete"
+  ],
+  "approvalReference": "",
+  "resourceOwner": "",
+  "budgetControlReference": "",
+  "budgetControlExternallyVerified": false,
+  "approvedBudget": "",
+  "maxRuns": 1,
+  "maxRows": 1,
+  "timeoutSeconds": 60,
+  "durationSeconds": 300,
+  "clientId": "",
+  "tenantId": "",
+  "projectEndpoint": "",
+  "agentName": "",
+  "agentVersion": "",
+  "agentInputField": "query",
+  "agentResponseField": "answer",
+  "datasetFile": "",
+  "datasetVersion": "1",
+  "datasetSha256": "",
+  "evaluator": "",
+  "judgeModel": "",
+  "ownerPrefix": "ci-support",
+  "azdExecutable": "",
+  "binarySha256": {
+    "azd": "",
+    "azure.ai.agents": "",
+    "azure.ai.evaluations": "",
+    "azure.ai.dataset": ""
+  },
+  "versions": {
+    "azure.ai.agents": "",
+    "azure.ai.evaluations": "",
+    "azure.ai.dataset": ""
+  }
+}

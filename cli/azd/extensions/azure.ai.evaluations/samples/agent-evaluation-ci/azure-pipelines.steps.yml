@@ -1,0 +1,32 @@
+# Include only in an already approved job, after package/auth/plan staging.
+parameters:
+  - name: executorRoot
+    type: string
+  - name: plan
+    type: string
+  - name: outputDirectory
+    type: string
+  - name: sampleDirectory
+    type: string
+    default: $(Build.SourcesDirectory)/cli/azd/extensions/azure.ai.evaluations/samples/agent-evaluation-ci
+
+steps:
+  - pwsh: |
+      python "$env:SAMPLE_DIRECTORY/run.py" `
+        --executor-root "$env:SAMPLE_EXECUTOR_ROOT" `
+        --plan "$env:SAMPLE_PLAN" --output "$env:SAMPLE_OUTPUT"
+      exit $LASTEXITCODE
+    displayName: Invoke the shared agents and evaluations lifecycle
+    env:
+      SAMPLE_DIRECTORY: ${{ parameters.sampleDirectory }}
+      SAMPLE_EXECUTOR_ROOT: ${{ parameters.executorRoot }}
+      SAMPLE_PLAN: ${{ parameters.plan }}
+      SAMPLE_OUTPUT: ${{ parameters.outputDirectory }}
+      AZD_SCENARIO_LIVE_APPROVAL_SHA256: $(ScenarioLiveApprovalSha256)
+      AZD_SCENARIO_LIVE_AUTH_CONFIG: $(ScenarioLiveAuthConfig)
+  - task: PublishPipelineArtifact@1
+    condition: always()
+    displayName: Preserve sanitized outcome, including failed or blocked runs
+    inputs:
+      targetPath: ${{ parameters.outputDirectory }}/service-status.json
+      artifact: agent-evaluation-$(Build.BuildId)-$(System.JobId)-$(System.JobAttempt)
