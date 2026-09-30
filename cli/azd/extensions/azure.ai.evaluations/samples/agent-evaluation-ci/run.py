@@ -78,6 +78,8 @@ def execute(root, plan, output):
         print("BLOCKED: output directory must be new; existing evidence was not changed", file=sys.stderr)
         return 3
     try:
+        if sys.version_info < (3, 12):
+            raise PrerequisiteError("Python 3.12 or later is required before starting the executor")
         entrypoint = verified_entrypoint(root)
         check_plan(plan, os.environ)
     except PrerequisiteError as error:

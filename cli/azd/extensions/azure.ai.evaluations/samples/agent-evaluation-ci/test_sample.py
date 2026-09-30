@@ -98,6 +98,60 @@ class SampleTests(unittest.TestCase):
         with self.assertRaises(self.service.Blocked):
             self.service.validate_plan(plan, "c" * 64, {})
 
+    def test_older_python_blocks_before_dependency_or_plan_validation(self):
+        for version in ((3, 8), (3, 10), (3, 11)):
+            with self.subTest(version=version), tempfile.TemporaryDirectory() as directory:
+                output = Path(directory) / "evidence"
+                with mock.patch.object(sample.sys, "version_info", version), \
+                     mock.patch.object(sample, "verified_entrypoint") as verify, \
+                     mock.patch.object(sample.subprocess, "run") as command, redirect_stderr(io.StringIO()):
+                    self.assertEqual(sample.execute(Path("unused"), Path("unused"), output), 3)
+                verify.assert_not_called()
+                command.assert_not_called()
+                report = sample.read_json(output / "service-status.json")
+                self.assertEqual((report["status"], report["execution"]), ("BLOCKED", "NOT RUN"))
+                self.assertIn("Python 3.12", report["error"]["message"])
+
+    def test_dependency_complete_profile_is_currently_blocked_before_driver(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan, env = self.fixture()
+            core = root / "azd.exe"
+            core.write_bytes(b"not an executable")
+            plan["azdExecutable"] = str(core)
+            plan["binarySha256"]["azd"] = hashlib.sha256(core.read_bytes()).hexdigest()
+            installed = {}
+            for extension, command in self.service.required_extensions(plan).items():
+                binary = root / (command + ".exe")
+                binary.write_bytes(b"not an extension")
+                plan["binarySha256"][extension] = hashlib.sha256(binary.read_bytes()).hexdigest()
+                installed[extension] = {
+                    "id": extension, "namespace": "ai." + command,
+                    "version": plan["versions"][extension], "path": binary.name,
+                }
+            config = root / "config.json"
+            config.write_text(json.dumps({"extension": {"installed": installed}}))
+            self.service.verify_install(plan, root)
+            for command in ("inspector", "projects", "connections", "toolboxes"):
+                extension = "azure.ai." + command
+                installed[extension] = {
+                    "id": extension, "namespace": "ai." + command,
+                    "version": "mock-only", "path": command + ".exe",
+                }
+                (root / (command + ".exe")).write_bytes(b"not a dependency executable")
+            config.write_text(json.dumps({"extension": {"installed": installed}}))
+            path = root / "plan.json"
+            raw = json.dumps(plan).encode()
+            path.write_bytes(raw)
+            env.update(AZD_SCENARIO_LIVE_APPROVAL_SHA256=hashlib.sha256(raw).hexdigest(),
+                       AZD_SCENARIO_LIVE_AUTH_CONFIG=str(root))
+            with mock.patch.object(self.service, "Driver") as driver:
+                with self.assertRaisesRegex(self.service.Blocked, "exactly the mode-specific"):
+                    self.service.execute(path, root / "evidence", env)
+            driver.assert_not_called()
+            report = sample.read_json(root / "evidence" / "service-status.json")
+            self.assertEqual((report["status"], report["execution"]), ("BLOCKED", "NOT RUN"))
+
     def copy_minimal_dependency(self, root):
         for relative in sample.read_json(sample.HERE / "dependency.json")["files"]:
             target = root / relative
@@ -167,6 +221,79 @@ class SampleTests(unittest.TestCase):
         self.assertIn("steps.lifecycle.outputs.fresh_output == 'true'", github)
         self.assertIn("Test-Path -LiteralPath $env:SAMPLE_OUTPUT", ado)
         self.assertIn("and(always(), eq(variables['SampleFreshOutput'], 'true'))", ado)
+        self.assertIn("exit 3", ado)
+
+    def readme_powershell(self, heading):
+        text = (sample.HERE / "README.md").read_text()
+        section = text.split(heading, 1)[1]
+        return section.split("```powershell\n", 1)[1].split("```", 1)[0]
+
+    def powershell(self):
+        executable = shutil.which("pwsh")
+        self.assertIsNotNone(executable, "PowerShell 7 is required for the documented recipe tests")
+        return executable
+
+    def test_install_recipe_checks_both_hashes_before_first_azd_command(self):
+        script = self.readme_powershell("### Non-interactive installation contract")
+        for invalid in ("core", "registry", "digest-shape", None):
+            with self.subTest(invalid=invalid), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                marker = root / "azd-called"
+                core = root / "azd.ps1"
+                core.write_text('Set-Content -LiteralPath $env:SAMPLE_TEST_MARKER -Value invoked\nexit 0\n')
+                registry = root / "registry.json"
+                registry.write_text('{"extensions":[]}')
+                env = {**os.environ, "APPROVED_AZD": str(core),
+                       "APPROVED_AZD_SHA256": hashlib.sha256(core.read_bytes()).hexdigest(),
+                       "APPROVED_REGISTRY": str(registry),
+                       "APPROVED_REGISTRY_SHA256": hashlib.sha256(registry.read_bytes()).hexdigest(),
+                       "APPROVED_AGENTS_VERSION": "mock-only", "APPROVED_EVALUATIONS_VERSION": "mock-only",
+                       "APPROVED_DATASET_VERSION": "mock-only", "AZD_CONFIG_DIR": str(root / "profile"),
+                       "SAMPLE_TEST_MARKER": str(marker)}
+                if invalid == "core":
+                    env["APPROVED_AZD_SHA256"] = "0" * 64
+                elif invalid == "registry":
+                    env["APPROVED_REGISTRY_SHA256"] = "0" * 64
+                elif invalid == "digest-shape":
+                    env["APPROVED_AZD_SHA256"] = "not-a-digest"
+                result = subprocess.run(
+                    [self.powershell(), "-NoProfile", "-NonInteractive", "-Command", script],
+                    env=env, stdin=subprocess.DEVNULL, capture_output=True, timeout=30, check=False,
+                )
+                if invalid is None:
+                    self.assertEqual(result.returncode, 0, result.stderr.decode())
+                    self.assertTrue(marker.exists())
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertFalse(marker.exists(), "azd must not execute before both approvals match")
+
+    def test_ado_stale_output_exits_three_without_launch_or_upload_permission(self):
+        text = (sample.HERE / "azure-pipelines.steps.yml").read_text()
+        body = text.split("  - pwsh: |\n", 1)[1].split("    displayName:", 1)[0]
+        script = "\n".join(line[6:] for line in body.splitlines())
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "evidence"
+            output.mkdir()
+            receipt = output / "service-status.json"
+            receipt.write_text("prior evidence")
+            env = {**os.environ, "SAMPLE_OUTPUT": str(output), "SAMPLE_DIRECTORY": "must-not-run"}
+            result = subprocess.run(
+                [self.powershell(), "-NoProfile", "-NonInteractive", "-Command", script],
+                env=env, stdin=subprocess.DEVNULL, capture_output=True, timeout=15, check=False,
+            )
+            self.assertEqual(result.returncode, 3, result.stderr.decode())
+            self.assertIn(b"SampleFreshOutput]false", result.stdout)
+            self.assertNotIn(b"SampleFreshOutput]true", result.stdout)
+            self.assertEqual(receipt.read_text(), "prior evidence")
+
+    def test_readme_export_selects_only_manifest_files(self):
+        script = self.readme_powershell("## Files and dependency assembly")
+        self.assertIn("$paths = @($dependency.files.PSObject.Properties.Name)", script)
+        self.assertIn('$commit @paths', script)
+        self.assertNotIn("eng/scripts/eval-scenario-ci eng/scripts/eval-candidate-proof", script)
+        readme = (sample.HERE / "README.md").read_text()
+        self.assertIn("- template: /cli/azd/", readme)
+        self.assertIn("override `sampleDirectory`", readme)
 
     def test_process_start_failure_records_blocked_not_success(self):
         with tempfile.TemporaryDirectory() as directory:

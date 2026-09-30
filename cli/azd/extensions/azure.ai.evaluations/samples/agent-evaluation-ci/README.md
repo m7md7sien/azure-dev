@@ -17,6 +17,16 @@ approval or live execution. Do not activate this sample until an authorized owne
 reviews the caller, executor and compatible installed package tuple and supplies
 the existing protected identity/resource/plan inputs below.
 
+**Known activation blocker:** the agents releases described here require
+`azure.ai.inspector`, `azure.ai.projects`, `azure.ai.connections` and
+`azure.ai.toolboxes`. Normal installation includes those dependencies, but
+the pinned executor accepts **exactly** agents, evaluations and dataset in its
+profile. Consequently, a normal dependency-complete installation is **BLOCKED**.
+Activation needs a separately reviewed executor change that approves and
+hash-verifies the complete dependency set, followed by an updated sample pin and
+plan. Do not use `--no-dependencies` or delete required dependencies to evade
+this boundary.
+
 ## Files and dependency assembly
 
 | File | Purpose |
@@ -35,12 +45,13 @@ The minimal dependency map is the five files in `dependency.json`: `service.py`,
 The process helper is required even to import the executor. It owns CLI and
 extension-child lifetimes and retains timeout/secondary-cleanup diagnostics;
 omitting it or substituting its bytes blocks this sample before execution.
-No production workflow, installer fixture, release
-pin or shared file is edited or copied into this sample. An authorized integrator
-can merge the production work, or stage a separate, fresh dependency checkout at
-the recorded commit. Pass its root as `--executor-root`.
-Use a fresh LF-byte export, not a working directory containing unrelated Python
-modules or bytecode caches. Git's automatic CRLF conversion changes the pinned
+No production workflow, installer fixture, release pin or shared file is edited
+or copied into this sample. Stage a fresh export of **only those five files** at
+the recorded commit and pass its root as `--executor-root`. Do not launch from a
+full checkout: additional modules beside the entry point can shadow Python's
+standard library. Keep the export exclusively owned and unchanged until the
+executor exits; a pre-launch hash check is not a filesystem isolation boundary
+or protection against concurrent writes. Git's automatic CRLF conversion changes the pinned
 bytes and is deliberately rejected. The recorded hash map is not itself an approval authority:
 review and protect this sample and its caller as well as the executor.
 
@@ -48,12 +59,15 @@ For local development, fetch the immutable public source into your own Git
 object database and export it without changing branches:
 
 ```powershell
-$commit = "350f30ebfdca2623cfc96d1bba7bd902c31e87b5"
+$dependency = Get-Content -LiteralPath `
+  "cli/azd/extensions/azure.ai.evaluations/samples/agent-evaluation-ci/dependency.json" -Raw |
+  ConvertFrom-Json
+$commit = $dependency.sourceCommit
+$paths = @($dependency.files.PSObject.Properties.Name)
 git fetch --no-tags https://github.com/m7md7sien/azure-dev.git $commit
 if ($LASTEXITCODE -ne 0) { throw "Could not fetch the exact executor dependency" }
 $stage = Join-Path ([IO.Path]::GetTempPath()) ("agent-eval-" + [guid]::NewGuid())
-git -c core.autocrlf=false archive --format=zip --output="$stage.zip" $commit `
-  eng/scripts/eval-scenario-ci eng/scripts/eval-candidate-proof
+git -c core.autocrlf=false archive --format=zip --output="$stage.zip" $commit @paths
 if ($LASTEXITCODE -ne 0) { throw "The exact local dependency is unavailable" }
 Expand-Archive -LiteralPath "$stage.zip" -DestinationPath $stage
 $env:SAMPLE_EXECUTOR_ROOT = $stage
@@ -63,6 +77,8 @@ python -B -m unittest discover `
 
 This export is local validation, not publication. Tests call the real plan
 validator and a real subprocess refusal path, but mock successful execution.
+Recipe tests also require PowerShell 7 (`pwsh`) and execute only a fake local
+azd script to prove checksum rejection occurs before the first invocation.
 The subprocess check stages only the five pinned modules, proving the minimal
 dependency map can load without borrowing files from a full checkout. Missing
 or modified bytes in each module are rejected before launch.
@@ -78,15 +94,18 @@ setup code must come from the trusted side of that boundary.
 
 Before including either form, the existing authorized job must supply:
 
-1. Python 3.12 or later and the exact executor export described above.
+1. Python 3.12 or later and the exact executor export described above. Older
+   interpreters are refused before the executor starts or any resource is created.
 2. An exclusive, isolated `AZD_CONFIG_DIR` with an existing approved CI service
    identity and exactly the approved `azure.ai.agents`, `azure.ai.evaluations`
-   and `azure.ai.dataset` installations. The `extensions.ai-agents` namespace
-   must initially be absent. Never copy a developer's credential cache.
+   and `azure.ai.dataset` installations. This is the pinned executor's current
+   contract, **not a satisfiable normal installation** because of the dependency
+   blocker above. The `extensions.ai-agents` namespace must initially be absent.
+   Never copy a developer's credential cache.
 3. A compatible, explicitly approved core/agents/evaluations/dataset artifact
    tuple: immutable source, registry/archive digests, installed executable hashes
-   and exact versions. The referenced agents implementation requires core
-   `>=1.34.2`; the historical offline core `1.33.0` tuple is incompatible.
+   and exact versions. Core requirements belong to the selected artifact, not
+   to this executor source pin. See the provenance distinctions below.
    This sample selects no replacement version and changes no official pins.
 4. An existing project endpoint, service-principal client and access tenant,
    hosted agent name/version, supported built-in evaluator and existing judge
@@ -105,19 +124,51 @@ the ADO parent must use already approved environment/service-connection checks.
 Creating an environment with a convenient name is not an approval gate. This
 sample creates no identities, IAM grants, environments or runners.
 
+### Keep package and source identities distinct
+
+| Agents identity | Declared core requirement |
+| --- | --- |
+| Source in executor commit `350f30eb`: agents `1.0.0-beta.16` | `>=1.32.0` |
+| Separately supplied local source `b185546784fa83ff4eb7b0934888dc843c244ddf`: agents `1.0.0-beta.17` | `>=1.34.2` |
+| Public registry `1.0.0-beta.17` at [main snapshot `21e5afff`](https://github.com/Azure/azure-dev/blob/21e5afff58bfd36d2791c761a7585ec6aa725ccc/cli/azd/extensions/registry.json) | `>=1.32.0` |
+
+The local `b185546` source is not the identity of the published beta.17 artifact.
+A matching version string does not make the builds interchangeable: approve
+the immutable source and exact binary hash. The historical offline core `1.33.0`
+tuple does not establish agents compatibility or live approval, and does not
+satisfy the separate `b185546` build's `>=1.34.2` requirement.
+
 ### Non-interactive installation contract
 
-The authorized setup stage can install from an independently reviewed immutable
-registry using the supported commands below. All values must already have been
-selected, verified and staged by its owner. This is an installation recipe, not
-an implemented auth/bootstrap stage in these templates.
+The following is the supported installation recipe for a separately authorized
+setup stage, **not a way to activate the currently pinned executor**. Normal
+installation will include the agents dependencies and then be rejected by that
+executor's three-extension restriction. Resolve the executor contract first.
+
+Verify the core and registry/archive bytes **before execution** using hashes
+supplied by the independent approval owner, not computed from the same
+untrusted download and treated as approval. The snippet checks the staged core
+and registry before its first azd invocation. The reviewed immutable registry
+must contain the approved archive digests for the complete resolved dependency
+set; install validates archive checksums before using extension binaries.
+After installing, approve the installed paths, hashes and versions in the plan.
+This is not an implemented auth/bootstrap stage in the provider templates.
 
 ```powershell
-$required = @("APPROVED_AZD", "APPROVED_REGISTRY", "APPROVED_AGENTS_VERSION",
+$required = @("APPROVED_AZD", "APPROVED_AZD_SHA256", "APPROVED_REGISTRY",
+              "APPROVED_REGISTRY_SHA256", "APPROVED_AGENTS_VERSION",
               "APPROVED_EVALUATIONS_VERSION", "APPROVED_DATASET_VERSION", "AZD_CONFIG_DIR")
 foreach ($name in $required) {
   if (-not [Environment]::GetEnvironmentVariable($name)) { throw "Missing protected input: $name" }
 }
+if ($env:APPROVED_AZD_SHA256 -notmatch '^[0-9a-fA-F]{64}$' -or
+    $env:APPROVED_REGISTRY_SHA256 -notmatch '^[0-9a-fA-F]{64}$') {
+  throw "Approved core and registry SHA256 values must each contain 64 hexadecimal characters"
+}
+if ((Get-FileHash -LiteralPath $env:APPROVED_AZD -Algorithm SHA256 -ErrorAction Stop).Hash -ne
+    $env:APPROVED_AZD_SHA256) { throw "Core bytes differ from the independent approval" }
+if ((Get-FileHash -LiteralPath $env:APPROVED_REGISTRY -Algorithm SHA256 -ErrorAction Stop).Hash -ne
+    $env:APPROVED_REGISTRY_SHA256) { throw "Registry bytes differ from the independent approval" }
 & $env:APPROVED_AZD extension source add --name sample-approved --type file `
   --location $env:APPROVED_REGISTRY --no-prompt
 if ($LASTEXITCODE -ne 0) { throw "Could not register the approved source" }
@@ -132,13 +183,9 @@ if ($LASTEXITCODE -ne 0) { throw "Evaluations installation failed" }
 if ($LASTEXITCODE -ne 0) { throw "Dataset installation failed" }
 ```
 
-Verify the core and registry/archive bytes **before execution**, then approve the
-installed paths, hashes and versions in the plan. The executor rechecks installed
-bytes/routing before making service calls. Do not use `latest`, infer approval
-from publisher hashes, disable dependencies to conceal incompatibility, or
-silently upgrade. If installation introduces other extension routes, the
-exclusive-profile contract is not met: resolve that package compatibility with
-the executor owner instead of deleting dependencies.
+The executor rechecks installed bytes/routing before making service calls.
+Do not use `latest`, infer approval from publisher hashes, disable dependencies
+with `--no-dependencies`, delete required dependencies, or silently upgrade.
 
 ## Author the plan and small test case
 
@@ -213,9 +260,12 @@ ADO: configure `ScenarioLiveApprovalSha256` as a protected secret and
 `ScenarioLiveAuthConfig` as the isolated staged profile path. Do not expose
 these as queue-time overrides. The template maps them to the same executor
 variables. No organization, pipeline ID, connection or pool is supplied here.
+The template include is repository-root-relative. For multi-repository checkouts,
+override `sampleDirectory` with the actual checkout's absolute sample path;
+`Build.SourcesDirectory` may be the shared checkout parent.
 
 ```yaml
-- template: cli/azd/extensions/azure.ai.evaluations/samples/agent-evaluation-ci/azure-pipelines.steps.yml
+- template: /cli/azd/extensions/azure.ai.evaluations/samples/agent-evaluation-ci/azure-pipelines.steps.yml
   parameters:
     executorRoot: $(Agent.TempDirectory)/approved-executor
     plan: $(Agent.TempDirectory)/approved-plan.json
@@ -236,8 +286,8 @@ ADO retention through the existing pipeline policy.
 | Result | Meaning |
 | --- | --- |
 | Exit 0, `PASS` / `COMPLETED` | Invocation, evaluation assertions and every owned cleanup succeeded |
-| Exit 3, `BLOCKED` / `NOT RUN` | Missing or invalid dependency/plan/identity/artifact prerequisites; no successful evaluation inferred |
-| Exit 1, `FAIL` | Started service execution or cleanup failed; inspect the receipt, not only the exit code |
+| Exit 3, `BLOCKED` / `NOT RUN` | Refused before `STARTED`, including Python/dependency checks, plan/native CI identity or installed binary metadata/hash validation; no successful evaluation inferred |
+| Exit 1, `FAIL` | Failure after `STARTED`, including service-principal/token/runtime-version checks, invocation, evaluation or cleanup; inspect the receipt, not only the exit code |
 | Missing receipt or process/job cancellation | Infrastructure interruption or unknown outcome; never a quality pass |
 
 The gate requires one completed run bound to the actual invocation response,

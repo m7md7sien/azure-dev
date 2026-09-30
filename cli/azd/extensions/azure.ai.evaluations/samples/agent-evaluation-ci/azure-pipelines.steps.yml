@@ -1,5 +1,5 @@
 # Include only in an already approved job, after package/auth/plan staging.
-# cspell:ignore setvariable
+# cspell:ignore setvariable logissue
 parameters:
   - name: executorRoot
     type: string
@@ -15,7 +15,8 @@ steps:
   - pwsh: |
       Write-Host "##vso[task.setvariable variable=SampleFreshOutput]false"
       if (Test-Path -LiteralPath $env:SAMPLE_OUTPUT) {
-        throw "Output directory must be new; existing evidence will not be uploaded"
+        Write-Host "##vso[task.logissue type=error]Output directory must be new; existing evidence will not be uploaded"
+        exit 3
       }
       Write-Host "##vso[task.setvariable variable=SampleFreshOutput]true"
       python "$env:SAMPLE_DIRECTORY/run.py" `
