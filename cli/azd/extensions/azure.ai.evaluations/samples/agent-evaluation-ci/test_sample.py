@@ -98,19 +98,29 @@ class SampleTests(unittest.TestCase):
         with self.assertRaises(self.service.Blocked):
             self.service.validate_plan(plan, "c" * 64, {})
 
-    def test_missing_or_changed_dependency_blocks_without_starting_executor(self):
-        for changed in (False, True):
-            with self.subTest(changed=changed), tempfile.TemporaryDirectory() as directory:
-                root = Path(directory) / "dependency"
-                if changed:
-                    shutil.copytree(self.root, root)
-                    (root / "eng" / "scripts" / "eval-scenario-ci" / "service.py").write_text("changed")
-                output = Path(directory) / "evidence"
-                with mock.patch.object(sample.subprocess, "run") as command, redirect_stderr(io.StringIO()):
-                    self.assertEqual(sample.execute(root, Path("unused"), output), 3)
-                command.assert_not_called()
-                report = sample.read_json(output / "service-status.json")
-                self.assertEqual((report["status"], report["execution"]), ("BLOCKED", "NOT RUN"))
+    def copy_minimal_dependency(self, root):
+        for relative in sample.read_json(sample.HERE / "dependency.json")["files"]:
+            target = root / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(self.root / relative, target)
+
+    def test_each_missing_or_changed_module_blocks_without_starting_executor(self):
+        files = sample.read_json(sample.HERE / "dependency.json")["files"]
+        for relative in files:
+            for changed in (False, True):
+                with self.subTest(module=relative, changed=changed), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory) / "dependency"
+                    self.copy_minimal_dependency(root)
+                    if changed:
+                        (root / relative).write_text("changed")
+                    else:
+                        (root / relative).unlink()
+                    output = Path(directory) / "evidence"
+                    with mock.patch.object(sample.subprocess, "run") as command, redirect_stderr(io.StringIO()):
+                        self.assertEqual(sample.execute(root, Path("unused"), output), 3)
+                    command.assert_not_called()
+                    report = sample.read_json(output / "service-status.json")
+                    self.assertEqual((report["status"], report["execution"]), ("BLOCKED", "NOT RUN"))
 
     def test_existing_evidence_is_never_overwritten(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -194,13 +204,15 @@ class SampleTests(unittest.TestCase):
     def test_real_process_imports_dependencies_and_blocks_before_cli_or_network(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            dependency = root / "minimal-dependency"
+            self.copy_minimal_dependency(dependency)
             plan, _ = self.fixture()
             path = root / "plan.json"
             path.write_text(json.dumps(plan))
             env = {**os.environ, "AZD_SCENARIO_LIVE_APPROVAL_SHA256": "not-an-approval",
                    "AZD_SCENARIO_LIVE_AUTH_CONFIG": str(root / "absent-auth")}
             result = subprocess.run(
-                [sys.executable, "-B", str(sample.HERE / "run.py"), "--executor-root", str(self.root),
+                [sys.executable, "-B", str(sample.HERE / "run.py"), "--executor-root", str(dependency),
                  "--plan", str(path), "--output", str(root / "evidence")],
                 env=env, stdin=subprocess.DEVNULL, capture_output=True, timeout=15, check=False,
             )

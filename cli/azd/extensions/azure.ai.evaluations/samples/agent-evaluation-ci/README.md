@@ -10,8 +10,8 @@ project/provider/deployment/teardown contract.
 
 The shared executor is a dependency of [production CI #10178](https://github.com/Azure/azure-dev/pull/10178),
 not duplicated here. Its corrected, published immutable dependency is
-[`eb9ce7c3e8e114b62304fb8fcf794ee3a82672f2`](https://github.com/m7md7sien/azure-dev/commit/eb9ce7c3e8e114b62304fb8fcf794ee3a82672f2);
-see the [existing-agent executor contract](https://github.com/m7md7sien/azure-dev/blob/eb9ce7c3e8e114b62304fb8fcf794ee3a82672f2/docs/guides/evaluation-scenario-ci.md#existing-agent-cli-smoke-not-deployment).
+[`350f30ebfdca2623cfc96d1bba7bd902c31e87b5`](https://github.com/m7md7sien/azure-dev/commit/350f30ebfdca2623cfc96d1bba7bd902c31e87b5);
+see the [existing-agent executor contract](https://github.com/m7md7sien/azure-dev/blob/350f30ebfdca2623cfc96d1bba7bd902c31e87b5/docs/guides/evaluation-scenario-ci.md#existing-agent-cli-smoke-not-deployment).
 That source is not assumed merged into `main`. Source publication is not package
 approval or live execution. Do not activate this sample until an authorized owner
 reviews the caller, executor and compatible installed package tuple and supplies
@@ -29,9 +29,13 @@ the existing protected identity/resource/plan inputs below.
 | [datasets/support.jsonl](datasets/support.jsonl) | One manually curated support question and expected behavior |
 | [test_sample.py](test_sample.py) | Offline adapter, real plan-validator and refusal checks |
 
-The minimal dependency map is the four files in `dependency.json`: `service.py`,
-`scenario.py`, `http_transport.py`, and `eval-candidate-proof/verify.py`, preserving
-their `eng/scripts/` layout. No production workflow, installer fixture, release
+The minimal dependency map is the five files in `dependency.json`: `service.py`,
+`scenario.py`, `http_transport.py`, `eval-candidate-proof/verify.py`, and
+`eval-candidate-proof/owned_process.py`, preserving their `eng/scripts/` layout.
+The process helper is required even to import the executor. It owns CLI and
+extension-child lifetimes and retains timeout/secondary-cleanup diagnostics;
+omitting it or substituting its bytes blocks this sample before execution.
+No production workflow, installer fixture, release
 pin or shared file is edited or copied into this sample. An authorized integrator
 can merge the production work, or stage a separate, fresh dependency checkout at
 the recorded commit. Pass its root as `--executor-root`.
@@ -44,7 +48,7 @@ For local development, fetch the immutable public source into your own Git
 object database and export it without changing branches:
 
 ```powershell
-$commit = "eb9ce7c3e8e114b62304fb8fcf794ee3a82672f2"
+$commit = "350f30ebfdca2623cfc96d1bba7bd902c31e87b5"
 git fetch --no-tags https://github.com/m7md7sien/azure-dev.git $commit
 if ($LASTEXITCODE -ne 0) { throw "Could not fetch the exact executor dependency" }
 $stage = Join-Path ([IO.Path]::GetTempPath()) ("agent-eval-" + [guid]::NewGuid())
@@ -59,6 +63,9 @@ python -B -m unittest discover `
 
 This export is local validation, not publication. Tests call the real plan
 validator and a real subprocess refusal path, but mock successful execution.
+The subprocess check stages only the five pinned modules, proving the minimal
+dependency map can load without borrowing files from a full checkout. Missing
+or modified bytes in each module are rejected before launch.
 They do not log in, install binaries or contact Azure.
 
 ## Prepare the protected job
