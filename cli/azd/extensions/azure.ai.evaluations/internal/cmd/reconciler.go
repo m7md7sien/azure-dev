@@ -940,25 +940,28 @@ func (r *evalReconciler) EnsureEval(
 func conflictingSourceContract(
 	group project.Eval, have *eval_api.OpenAIEval, want *eval_api.CreateOpenAIEvalRequest,
 ) bool {
-	if group.Source == nil || have == nil || want == nil || want.DataSourceConfig == nil {
+	if have == nil || want == nil || want.DataSourceConfig == nil {
 		return false
 	}
-	if group.Source.Type != project.SourceTypeTraces && group.Source.Type != project.SourceTypeResponses {
-		return false
+	if group.Source != nil {
+		switch have.DataSourceConfig["scenario"] {
+		case "responses":
+			if group.Source.Type == project.SourceTypeTraces {
+				return true
+			}
+		case "traces", "traces_preview":
+			if group.Source.Type == project.SourceTypeResponses {
+				return true
+			}
+		}
 	}
-	switch have.DataSourceConfig["scenario"] {
-	case "responses":
-		if group.Source.Type == project.SourceTypeTraces {
+	// Service-managed source schemas may include enrichment unrelated to the
+	// client's custom sample-schema opt-in.
+	if have.DataSourceConfig["type"] == "custom" && want.DataSourceConfig.Type == "custom" {
+		if sampled, known := have.DataSourceConfig["include_sample_schema"].(bool); known &&
+			sampled != want.DataSourceConfig.IncludeSampleSchema {
 			return true
 		}
-	case "traces", "traces_preview":
-		if group.Source.Type == project.SourceTypeResponses {
-			return true
-		}
-	}
-	if sampled, known := have.DataSourceConfig["include_sample_schema"].(bool); known &&
-		sampled != want.DataSourceConfig.IncludeSampleSchema {
-		return true
 	}
 	namespace := func(binding string) string {
 		for _, prefix := range []string{"{{item.", "{{sample."} {

@@ -156,10 +156,13 @@ and [conversation mappings](https://learn.microsoft.com/azure/foundry/observabil
 #### Updating an existing evaluation
 
 Stored evaluation mappings are immutable. Installing a newer extension or
-running `azd ai eval create` on an unchanged declaration does not replace old
-defaults. Switching between trace and stored-response source modes creates a
+running `azd ai eval create` on an unchanged declaration does not replace every
+old default. Switching between trace and stored-response source modes creates a
 new definition when their stored input contracts differ; changing only filters,
 time windows, response IDs, or row caps keeps the existing history.
+Known item-versus-generated-output conflicts are also corrected for model and
+agent targets, even without a `source:` block. Missing stored contract details
+do not trigger a speculative replacement, and explicit ID pins are always preserved.
 
 To deliberately apply the current mappings to an existing managed evaluation:
 

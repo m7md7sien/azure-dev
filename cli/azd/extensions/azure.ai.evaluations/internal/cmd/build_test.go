@@ -70,6 +70,79 @@ func withJudge(model string, refs ...evalcore.EvaluatorRef) []evalcore.Evaluator
 	return refs
 }
 
+// requiredFixtureMappings authors the extra bindings for the live positive
+// definition fixture. Standard fields keep the source/level defaults.
+func requiredFixtureMappings(
+	t *testing.T, summary *eval_api.EvaluatorSummary, columns map[string]bool,
+) map[string]string {
+	t.Helper()
+	mapping := map[string]string{}
+	if contract := summary.DataSchema(); contract != nil {
+		for _, field := range contract.Required {
+			switch field {
+			case "query", "response", "messages", "tool_calls", "tool_definitions":
+				continue
+			}
+			require.Truef(t, columns[field], "positive fixture lacks required column %q", field)
+			mapping[field] = "{{item." + field + "}}"
+		}
+	}
+	return mapping
+}
+
+func TestBuildPositiveFixtureAuthorsOnlyRequiredExtraMappings(t *testing.T) {
+	for _, level := range []string{"turn", "conversation"} {
+		t.Run(level, func(t *testing.T) {
+			contract := schema("fixture",
+				[]string{"response", "instruction_id_list", "instruction_kwargs"},
+				[]string{"query", "response", "messages", "instruction_id_list", "instruction_kwargs", "context"},
+				nil, nil, "turn", "conversation")
+			var row map[string]any
+			require.NoError(t, json.Unmarshal([]byte(`{
+				"query":"Answer concisely.",
+				"messages":[{"role":"user","content":"Answer concisely."},{"role":"assistant","content":"Yes."}],
+				"instruction_id_list":["length_constraints:number_words"],
+				"instruction_kwargs":[{"relation":"less than","num_words":10}],
+				"context":"Optional, not requested."
+			}`), &row))
+			columns := map[string]bool{}
+			for field := range row {
+				columns[field] = true
+			}
+			mapping := requiredFixtureMappings(t, contract, columns)
+			require.Equal(t, map[string]string{
+				"instruction_id_list": "{{item.instruction_id_list}}",
+				"instruction_kwargs":  "{{item.instruction_kwargs}}",
+			}, mapping)
+			group := groupWith([]evalcore.EvaluatorRef{{Evaluator: "fixture", DataMapping: mapping}}, level)
+			request, err := buildEvalRequest(group, map[string]*eval_api.EvaluatorSummary{"fixture": contract}, columns)
+			require.NoError(t, err)
+			bound := request.TestingCriteria[0].DataMapping
+			require.NotContains(t, bound, "context", "optional catalog inputs must not become inferred mappings")
+			require.Equal(t, "{{sample.tool_definitions}}", bound["tool_definitions"])
+			if level == "turn" {
+				require.Equal(t, "{{sample.output_items}}", bound["response"])
+				require.Equal(t, "{{sample.tool_calls}}", bound["tool_calls"])
+				require.NotContains(t, bound, "messages")
+			} else {
+				require.Equal(t, "{{item.messages}}", bound["messages"])
+				require.NotContains(t, bound, "response")
+				require.NotContains(t, bound, "tool_calls")
+			}
+			for field, binding := range mapping {
+				column, ok := itemColumn(binding)
+				require.True(t, ok)
+				require.Equal(t, row[field], row[column])
+				require.NotEmpty(t, row[column], "explicit mappings must reference fixture data")
+			}
+			group.Evaluators[0].DataMapping = nil
+			_, err = buildEvalRequest(group, map[string]*eval_api.EvaluatorSummary{"fixture": contract}, columns)
+			require.ErrorContains(t, err, "instruction_id_list")
+			require.ErrorContains(t, err, "instruction_kwargs")
+		})
+	}
+}
+
 // An agent evaluator takes its response from the sample and its query from the
 // dataset.
 func TestBuildBindsAgentFieldsFromSample(t *testing.T) {
