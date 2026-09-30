@@ -149,8 +149,10 @@ Verify the core and registry/archive bytes **before execution** using hashes
 supplied by the independent approval owner, not computed from the same
 untrusted download and treated as approval. The snippet checks the staged core
 and registry before its first azd invocation. The reviewed immutable registry
-must contain the approved archive digests for the complete resolved dependency
-set; install validates archive checksums before using extension binaries.
+must contain an approved SHA256 checksum for **every resolved artifact** in the
+complete dependency set. Reject any missing checksum: azd skips checksum
+validation when both the algorithm and value are absent. With those checksums
+present, install validates archive bytes before using extension binaries.
 After installing, approve the installed paths, hashes and versions in the plan.
 This is not an implemented auth/bootstrap stage in the provider templates.
 
